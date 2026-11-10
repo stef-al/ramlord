@@ -15,7 +15,8 @@ fixtures/      buildings and snapshots as JSON; timelines/ for flags over time;
                golden/ holds the expected PNGs
 rules/         windows.toml: how processes become tenants, built into the exe
 prices.json    price per GB by memory type (used from M5)
-scripts/       wine-run.sh, wine-demo.sh and wine-evict.sh: rung 4
+scripts/       wine-run.sh, wine-demo.sh, wine-evict.sh and wine-m5.sh: rung 4
+               (wine-settings.sh writes the prefix's settings.json for them)
 docs/evidence/ screenshots and reports behind each milestone's boxes
 ```
 
@@ -116,8 +117,15 @@ mode not available on this platform, 6 when the window fails and 7 when
 - Commit in small steps with clear messages.
 - `gh pr` and `gh issue` do not work in cloud sessions; the owner creates pull
   requests. Do not start a milestone that was not asked for.
-- Until M5, a live building's price line says `RAM` at the DDR5 price
-  (`Lease::placeholder`), and F2 and F3 do nothing.
+- The live building is billed by `prices::lease`: a custom price, else the
+  price file's price for the chosen or detected type (SMBIOS, parsed by
+  `smbios.rs`, tested on `fixtures/smbios/*.bin` made by `make.py`
+  there). The price file is the embedded `prices.json`, or the copy
+  fetched once a day into `%APPDATA%\RAMlord\prices.json` when it is newer.
+  `--snapshot` and `--self-test` keep `Lease::placeholder`.
+- The close button hides to the tray unless `close_quits` is set; one copy
+  runs (the mutex `Local\RAMlord.Instance`). The Wine scripts set
+  `close_quits` so `taskkill` still ends their runs.
 - The live app keeps `state.json` in `%APPDATA%\RAMlord\` (hues, watched
   time, flags' counters) and the Family list in `settings.json` beside it.
   It keeps the other keys in `settings.json`, so M5's settings can share
@@ -147,6 +155,15 @@ WINEPREFIX=$PWD/scripts/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
   scripts/wine-run.sh target/x86_64-pc-windows-gnu/release/ramlord.exe shot.png
 ```
 
+The settings screen, F2's card in Pictures and on the clipboard, close to
+the tray and a second start (M5). It needs `xdotool` and `xclip`:
+
+```bash
+WINEPREFIX=$PWD/scripts/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
+  xvfb-run -a -s "-screen 0 1920x1080x24" \
+  scripts/wine-m5.sh target/x86_64-pc-windows-gnu/release/ramlord.exe shots/
+```
+
 Evicting Notepad from the running app (M4). Add `force` to give Notepad
 unsaved text first and force it out after it refuses. It needs `xdotool`:
 
@@ -164,7 +181,7 @@ Tools for rungs 3 and 4, if missing:
 
 ```bash
 rustup target add x86_64-pc-windows-gnu
-apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 wine wine64 xvfb imagemagick xdotool
+apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 wine wine64 xvfb imagemagick xdotool xclip
 ```
 
 ## CI

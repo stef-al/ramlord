@@ -22,3 +22,8 @@ Screenshots and outputs that back a milestone's "done when" boxes.
 | `after-m4-holder-staff.png` | A click on one of Staff's pictures: the Staff card, with Staff's units, plain canvas pictures and cardboard box outlined, and Staff's own pictures and boxes below its parts. |
 | `after-m4-others-card.png` | The Others card on a PC with twenty small apps: 22 apps, 13 to a page, MORE 1/2; Others' units outlined in the tower. |
 | `after-m4-others-details.png` | A row of the Others card opens that app's details card, with Evict and Family; Back returns to the list. |
+| `m5-wine-settings.png` | Rung 4 for M5: F3 in the live app under Wine. Wine reports no memory type, so it reads AUTO ? and the landlord asks for it. Made with `scripts/wine-m5.sh`. |
+| `m5-wine-card-saved.png` | F2 under Wine: the remark says the card was saved to Pictures and copied. |
+| `m5-wine-card.png` | The PNG F2 wrote to `Pictures\RAMlord\` under Wine, 960 by 1200. The same run found it on the clipboard as an image, a second start left one window, and WM_CLOSE hid the window to the tray until a second start showed it again. |
+| `m5-custom-price.png`, `m5-card-euro.png` | A custom price of EUR 5.20 typed on the settings screen (`tests/prices_settings.rs`): every amount on screen and on the card changes to it. |
+| `m5-tray-icons.png` | The tray icon at 8 times scale: 30% occupied, and full (red). |

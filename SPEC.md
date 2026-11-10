@@ -349,7 +349,7 @@ Counters are added by their English names (`PdhAddEnglishCounterW`), so every la
 - The boxes are split by packed memory: commit beyond the working set and the pictures, the best estimate Windows allows of whose pages are compressed. Staff's processes have packed memory too.
 - A named tenant whose share is at least half a unit gets its own boxes or pictures, in its hue. Smaller shares and the merged tenants' are Others', in Others' gray. Staff's, and what no process claims, are plain cardboard and plain canvas, next to Staff.
 
-**VM hosts.** A process in `vm_hosts` (`vmmem`, Windows Sandbox's, Android's, HP Sure Click's `br-uxendm.exe`) is a tenant even in session 0. Its rent is its whole working set, because a guest's memory is mapped into the host, not private to it.
+**VM hosts.** A process in `vm_hosts` (`vmmem`, Windows Sandbox's, Android's, HP Sure Click's `br-uxendm.exe`) is a tenant even in session 0. Its rent is its whole working set, because a guest's memory is mapped into the host, not private to it, and its lease is at least that: Windows does not charge a guest's memory to the host's commit. A VM host's processes are one tenant by image name, opened or not.
 
 **Processes that cannot be opened.** The process list names every process, but one RAMlord cannot open is Staff, as rule 1 says, whatever its name.
 
@@ -360,6 +360,15 @@ Counters are added by their English names (`PdhAddEnglishCounterW`), so every la
 **The Staff card.** It lists what Staff is made of, cut in this order so the parts always sum to Staff: services (Staff processes' private memory), kernel pools in RAM, drivers and kernel code in RAM, the file cache in RAM, pages waiting to be written to disk, memory the hardware reserves, and SHARED, OTHER for the rest. Below come Staff's own pictures and boxes. Esc or Back closes it.
 
 **The Others card.** It lists everyone the `OTHERS (n)` line sums, largest first, 13 to a page, with MORE to turn pages. A row opens that app's details card with all its actions; Back or Esc returns to the list. Up and Down move along the list, Enter opens, Delete asks to evict.
+
+**Decided in M5.** Where the sections above leave a choice open:
+
+- The panel's price line marks an estimated price with `~` (`LPDDR5 ~$14.34/GB  NOV 3`), which fits its 24 characters. The card writes `EST.`.
+- An unknown memory type is billed as DDR4, estimated, under the label `RAM`. The landlord asks once: "What RAM is this? Pick its type in settings: F3."
+- A typed price reads an amount with up to two decimals (point or comma) and a symbol of one to three characters before or after it, such as `€5.20`, `5,20 €` or `130 Kč`. The symbol is always shown before amounts. An empty entry goes back to the price file. A custom price's date is the day it was typed.
+- The card always lists up to ten tenants, even when the panel lists fewer to make room for BOXES and GALLERY.
+- Replies to the user, such as an eviction's report or "Rent roll saved to Pictures and copied.", take the remark line at once and stay 20 seconds.
+- Without a tray icon (no notification area), the close button quits, so RAMlord can always be reached.
 
 **Remaining limits.** Windows says nothing more about SHARED, OTHER without administrator rights: shared program code and files, page tables, memory drivers lock. A process's graphics memory and its boxes are estimates, marked `~` where they are shown as amounts.
 
