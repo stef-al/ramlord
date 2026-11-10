@@ -68,7 +68,8 @@ fn a_live_dump_groups_into_staff_tenants_and_vacant_that_sum_to_capacity() {
 
     let b = building(&snapshot, &Rules::builtin(), &Lease::placeholder());
     b.validate().expect("the building balances");
-    let sum = b.staff_bytes + b.rent_bytes() + b.vacant_bytes;
+    // Boxes (the Memory Compression process) are a part of their own.
+    let sum = b.staff_bytes + b.rent_bytes() + b.boxes_bytes + b.vacant_bytes;
     if b.staff_bytes == 0 && b.vacant_bytes == 0 && sum > b.capacity_bytes {
         assert!(
             snapshot.rent_is_estimate,
@@ -87,11 +88,12 @@ fn a_live_dump_groups_into_staff_tenants_and_vacant_that_sum_to_capacity() {
         .collect();
     println!(
         "::notice title=Live dump::{} processes, {} tenants. Staff {} MiB + tenants {} MiB + \
-         vacant {} MiB = capacity {} MiB{}. Largest: {}",
+         boxes {} MiB + vacant {} MiB = capacity {} MiB{}. Largest: {}",
         snapshot.processes.len(),
         b.tenants.len(),
         b.staff_bytes / MIB,
         b.rent_bytes() / MIB,
+        b.boxes_bytes / MIB,
         b.vacant_bytes / MIB,
         b.capacity_bytes / MIB,
         if snapshot.rent_is_estimate {
