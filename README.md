@@ -9,10 +9,11 @@ account, sends no telemetry and asks for no admin rights.
 
 ![The sample building](fixtures/golden/sample-tower.png)
 
-**Status:** early development. The tower and the rent roll card can be drawn
-from a fixture file, and on Windows `ramlord --demo` shows the sample building
-in a window. Live memory readings come next. See [SPEC.md](SPEC.md) for the
-full design and the milestones.
+**Status:** early development. On Windows, `ramlord` shows your real apps
+in the tower, updating every 2 seconds; `ramlord --demo` shows a sample
+building. Flags, the landlord's remarks, eviction, prices for your memory
+type, settings and the tray come next. See [SPEC.md](SPEC.md) for the full
+design and the milestones.
 
 ## Build
 
@@ -21,8 +22,10 @@ cargo test --workspace
 cargo run -p ramlord -- --building fixtures/sample-building.json --render tower.png --card rent-roll.png
 ```
 
-On Windows, `cargo build --release` produces `target/release/ramlord.exe`;
-`ramlord --demo` opens the sample building.
+On Windows, `cargo build --release` produces `target/release/ramlord.exe`.
+`ramlord --dump my-pc.json` writes what RAMlord sees (no window titles,
+command lines or user names; your profile folder becomes `%USERPROFILE%`),
+and `ramlord --self-test report.json` checks RAMlord's own budgets.
 
 ## License
 

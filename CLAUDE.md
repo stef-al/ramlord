@@ -11,10 +11,11 @@ look; where it disagrees with `SPEC.md`, `SPEC.md` wins. Never build from
 ```text
 crates/core/   ramlord-core: logic and drawing, pure (no OS calls)
 crates/app/    ramlord: the exe; all Windows code under src/win/
-fixtures/      buildings as JSON; fixtures/golden/ holds the expected PNGs
-rules/         windows.toml: how processes become tenants (used from M2)
+fixtures/      buildings and snapshots as JSON; fixtures/golden/ holds the expected PNGs
+rules/         windows.toml: how processes become tenants, built into the exe
 prices.json    price per GB by memory type (used from M5)
-scripts/       wine-demo.sh: rung 4
+scripts/       wine-run.sh and wine-demo.sh: rung 4
+docs/evidence/ screenshots and reports behind each milestone's boxes
 ```
 
 ## Build and test
@@ -27,16 +28,27 @@ cargo check --workspace --all-targets --target x86_64-pc-windows-gnu
 cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
-Render the sample building (the tower at 3x, the card at 4x):
+Render the sample building (the tower at 3x, the card at 4x), and a
+snapshot grouped with the rules:
 
 ```bash
 cargo run -p ramlord -- --building fixtures/sample-building.json --render tower.png --card rent-roll.png
 ```
 
+```bash
+cargo run -p ramlord -- --snapshot fixtures/snapshot-desk.json --render desk.png
+```
+
 When a rendering change is intended, regenerate the golden images with the
-same command into `fixtures/golden/sample-tower.png` and
-`fixtures/golden/sample-rent-roll.png`, look at both, and say in the commit
-what changed and why.
+same commands into `fixtures/golden/` (`sample-tower.png`,
+`sample-rent-roll.png`, `snapshot-desk-tower.png`), look at them, and say in
+the commit what changed and why.
+
+Check a live dump from Windows (CI does this on the Windows runner):
+
+```bash
+RAMLORD_DUMP=dump.json cargo test -p ramlord-core --test live_dump -- --nocapture
+```
 
 Build the Windows exe in the session (needs `x86_64-w64-mingw32-gcc`):
 
@@ -46,8 +58,8 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 The exe exits with 0 on success, 2 for a usage error, 3 when the input
 cannot be read or is invalid, 4 when the output cannot be written, 5 for a
-mode not available on this platform or not built yet, and 6 when the window
-fails.
+mode not available on this platform, 6 when the window fails and 7 when
+`--self-test` finds a broken budget (the JSON report says which).
 
 ## Ground rules
 
@@ -67,6 +79,8 @@ fails.
 - Commit in small steps with clear messages.
 - `gh pr` and `gh issue` do not work in cloud sessions; the owner creates pull
   requests. Do not start a milestone that was not asked for.
+- Until M5, a live building's price line says `RAM` at the DDR5 price
+  (`Lease::placeholder`); until M3 it has no remark and no flags.
 
 ## The six verification rungs
 
@@ -76,17 +90,22 @@ fails.
 | 2 | Session | Render a fixture to PNG (command above), open it and compare with `docs/reference/` |
 | 3 | Session | `cargo check --workspace --all-targets --target x86_64-pc-windows-gnu` |
 | 4 | Session | Build the exe with MinGW and run `--demo` under `xvfb-run wine` with a screenshot (below) |
-| 5 | GitHub Actions `windows-latest` | Release build, `cargo test`, render the fixture with the exe and compare with the golden PNGs (`--self-test` and `--dump` join in M2) |
+| 5 | GitHub Actions `windows-latest` | Release build, `cargo test`, render the fixture with the exe and compare with the golden PNGs, `ramlord --self-test`, `ramlord --dump` checked by `tests/live_dump.rs` |
 | 6 | The owner, on a Windows PC | The checklist in `SPEC.md` |
 
-Rung 4, adapted from `docs/reference/wine-probe/run.sh`:
+Rung 4, adapted from `docs/reference/wine-probe/run.sh`. The live app with
+Notepad running (drop `WINE_ALSO` and add `--demo` for the sample building):
 
 ```bash
 cargo build --release --target x86_64-pc-windows-gnu
-WINEPREFIX=$PWD/scripts/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
+WINEPREFIX=$PWD/scripts/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" WINE_ALSO=notepad \
   xvfb-run -a -s "-screen 0 1920x1080x24" \
-  scripts/wine-demo.sh target/x86_64-pc-windows-gnu/release/ramlord.exe demo-shot.png
+  scripts/wine-run.sh target/x86_64-pc-windows-gnu/release/ramlord.exe shot.png
 ```
+
+`--dump` and `--self-test` run under Wine too (`wine ramlord.exe --dump
+out.json` inside `xvfb-run`). Wine reports no private working set, so rent
+there is estimated and amounts show a `~`.
 
 Tools for rungs 3 and 4, if missing:
 
