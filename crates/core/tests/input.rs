@@ -198,20 +198,36 @@ fn keys_select_open_and_evict_through_the_whole_pipeline() {
     // The next sample, without Chrome, reports what was vacated.
     let mut after = snapshot.clone();
     after.at_ms += 2_000;
-    after.processes.retain(|p| {
-        !p.image_path
+    let chrome = |p: &ramlord_core::snapshot::Process| {
+        p.image_path
             .as_deref()
             .is_some_and(|i| i.contains("Chrome"))
-    });
-    live.update(&after).unwrap();
-    let Eviction::Done { name, vacated } = &live.ui().eviction else {
-        panic!("{:?}", live.ui().eviction);
     };
-    assert_eq!(name, "CHROME");
-    assert!(*vacated > 2 << 30);
-    save(live.frame().unwrap(), "dialog-done.png");
-    live.input(Input::Key(Key::Enter), now + 9_000);
+    // Its memory comes free, as when a real process exits.
+    let freed: u64 = after
+        .processes
+        .iter()
+        .filter(|p| chrome(p))
+        .map(|p| p.rent_bytes)
+        .sum();
+    after.available_bytes += freed;
+    after.commit_used_bytes -= after
+        .processes
+        .iter()
+        .filter(|p| chrome(p))
+        .map(|p| p.lease_bytes)
+        .sum::<u64>();
+    after.processes.retain(|p| !chrome(p));
+    live.update(&after).unwrap();
+    // The dialog closes, the rent roll is back, and the landlord says it.
     assert_eq!(live.ui().eviction, Eviction::Idle);
+    assert_eq!(live.ui().view, View::Roll);
+    let remark = &live.building().unwrap().remark;
+    assert!(
+        remark.starts_with("Evicted CHROME. ") && remark.ends_with(" GB vacated."),
+        "{remark}"
+    );
+    save(live.frame().unwrap(), "evicted.png");
 }
 
 #[test]

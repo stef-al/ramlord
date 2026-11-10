@@ -29,6 +29,9 @@ pub const NOT_HOME_MIN_BYTES: u64 = 500 * MIB;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
+    /// The report of an eviction the user asked for. It answers the user,
+    /// so it is shown at once, then held 20 seconds like any other line.
+    Evicted = 0,
     Full = 1,
     Leak = 2,
     Squatters = 3,
@@ -59,6 +62,8 @@ pub struct Sample<'a> {
     pub commit_limit_bytes: u64,
     pub signed_in_at_ms: u64,
     pub gained: &'a [Gained],
+    /// An eviction finished in this sample: its report.
+    pub evicted: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -93,6 +98,12 @@ fn span(ms: u64) -> String {
         (1, _) => "1 day".into(),
         (d, _) => format!("{d} days"),
     }
+}
+
+/// "Evicted DISCORD. 2.9 GB vacated."
+pub fn evicted_text(name: &str, vacated_bytes: u64) -> String {
+    let gb = gb_text(vacated_bytes);
+    with_name(name, |n| format!("Evicted {n}. {gb} GB vacated."))
 }
 
 pub fn full_text() -> String {
@@ -299,7 +310,16 @@ impl Remarks {
                 _ => false,
             });
 
-        if keep {
+        if let Some(text) = sample.evicted {
+            self.current = Some(Showing {
+                remark: Remark {
+                    kind: Kind::Evicted,
+                    text: text.to_owned(),
+                    tenant: None,
+                },
+                since: now,
+            });
+        } else if keep {
             if let Some(showing) = self.current.as_mut()
                 && showing.remark.kind == Kind::Full
             {
@@ -374,6 +394,7 @@ mod tests {
             commit_limit_bytes: 32 * GIB,
             signed_in_at_ms: 1_000,
             gained,
+            evicted: None,
         }
     }
 
@@ -413,6 +434,10 @@ mod tests {
         );
         assert_eq!(full_text(), "We're full. Somebody has to go.");
         assert_eq!(
+            evicted_text("DISCORD", 2_970 * MIB),
+            "Evicted DISCORD. 2.9 GB vacated."
+        );
+        assert_eq!(
             calm_text(),
             "Half the building is empty. Nobody needs evicting."
         );
@@ -432,6 +457,7 @@ mod tests {
                 packed_text(&b)
             },
             squatters_text(12_345),
+            evicted_text(long, 123_456 * MIB),
             full_text(),
             calm_text(),
         ] {
@@ -562,6 +588,38 @@ mod tests {
         assert_eq!(
             r.update(&leaking, &sample(40_000, &[]), &mut told).kind,
             Kind::SmallTalk
+        );
+    }
+
+    #[test]
+    fn an_eviction_report_comes_at_once_and_stays_twenty_seconds() {
+        let mut r = Remarks::new();
+        let mut told = None;
+        let b = building(4_000);
+        r.update(&b, &sample(0, &[]), &mut told);
+        // The user evicted someone 5 seconds into the small talk: the
+        // report answers at once.
+        let report = sample(5_000, &[]);
+        let report = Sample {
+            evicted: Some("Evicted A. 4.0 GB vacated."),
+            ..report
+        };
+        let remark = r.update(&b, &report, &mut told);
+        assert_eq!(remark.kind, Kind::Evicted);
+        assert_eq!(remark.text, "Evicted A. 4.0 GB vacated.");
+        // Even a full building waits until the report has had 20 seconds.
+        let full = building(100);
+        for at in [6_000, 24_999] {
+            assert_eq!(
+                r.update(&full, &sample(at, &[]), &mut told).kind,
+                Kind::Evicted
+            );
+        }
+        // From then on, the lines go on as before. A full building takes
+        // 20 seconds of its own before it is called full.
+        assert_ne!(
+            r.update(&full, &sample(25_000, &[]), &mut told).kind,
+            Kind::Evicted
         );
     }
 

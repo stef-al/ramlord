@@ -79,12 +79,14 @@ impl Live {
         for tenant in &mut current.tenants {
             tenant.flags = self.watch.flags_of(&tenant.id).to_vec();
         }
+        let evicted = self.ui.sampled(&current);
         let sample = Sample {
             watched_ms: self.watch.state().watched_ms,
             commit_used_bytes: snapshot.commit_used_bytes,
             commit_limit_bytes: snapshot.commit_limit_bytes,
             signed_in_at_ms: snapshot.signed_in_at_ms,
             gained: &gained,
+            evicted: evicted.as_deref(),
         };
         let mut told = self.watch.state().squatters_told;
         let remark = self.remarks.update(&current, &sample, &mut told).clone();
@@ -100,7 +102,6 @@ impl Live {
             (Kind::Full, Some(id)) => current.tenants.iter().position(|t| t.id == id),
             _ => None,
         };
-        self.ui.sampled(&current);
         // The smoothed building lists the same tenants in the same order,
         // so the layout's tenant indices hold for `current` too.
         self.scene = Some(Scene {

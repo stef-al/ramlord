@@ -17,7 +17,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::building::{Building, Flag};
-use crate::format::{cut, gb_text, wrap_balanced};
+use crate::format::{cut, wrap_balanced};
+use crate::remarks::evicted_text;
 
 /// How long the polite phase waits for the processes to exit.
 pub const POLITE_MS: u64 = 5_000;
@@ -150,16 +151,12 @@ pub enum Eviction {
     Lawyer {
         name: String,
     },
-    /// Every process has left; the next sample says how much was vacated.
+    /// Every process has left. The next sample closes the dialog and the
+    /// landlord's remark says what it vacated.
     Gone {
         tenant: String,
         name: String,
         before: u64,
-    },
-    /// "Evicted NAME. 2.9 GB vacated."
-    Done {
-        name: String,
-        vacated: u64,
     },
 }
 
@@ -184,9 +181,6 @@ impl Eviction {
             Eviction::Forcing { name, .. } => format!("Evicting {name}..."),
             Eviction::Lawyer { name } => format!("{name} has a lawyer. Close it yourself."),
             Eviction::Gone { name, .. } => format!("{name} has left. Counting the rooms..."),
-            Eviction::Done { name, vacated } => {
-                format!("Evicted {name}. {} GB vacated.", gb_text(*vacated))
-            }
         })
     }
 
@@ -202,9 +196,7 @@ impl Eviction {
     pub fn keys(&self) -> &'static str {
         match self {
             Eviction::Refused { .. } => "ESC LEAVES, DEL FORCES",
-            Eviction::Confirm { .. } | Eviction::Lawyer { .. } | Eviction::Done { .. } => {
-                "ENTER OR ESC"
-            }
+            Eviction::Confirm { .. } | Eviction::Lawyer { .. } => "ENTER OR ESC",
             _ => "",
         }
     }
@@ -213,7 +205,7 @@ impl Eviction {
         match self {
             Eviction::Confirm { .. } => &[Target::CloseIt, Target::Cancel],
             Eviction::Refused { .. } => &[Target::Leave, Target::Force],
-            Eviction::Lawyer { .. } | Eviction::Done { .. } => &[Target::Ok],
+            Eviction::Lawyer { .. } => &[Target::Ok],
             _ => &[],
         }
     }
@@ -262,28 +254,32 @@ impl Ui {
         building.tenants.iter().position(|t| t.id == id)
     }
 
-    /// Forgets a selection whose tenant has gone.
-    pub fn sampled(&mut self, building: &Building) {
+    /// Forgets a selection whose tenant has gone. After an eviction,
+    /// closes the dialog and returns the report for the landlord's
+    /// remark: what this sample shows was vacated, never a promise.
+    pub fn sampled(&mut self, building: &Building) -> Option<String> {
+        let report = match &self.eviction {
+            Eviction::Gone {
+                tenant,
+                name,
+                before,
+            } => {
+                let left = building
+                    .tenants
+                    .iter()
+                    .find(|t| &t.id == tenant)
+                    .map_or(0, |t| t.rent_bytes);
+                let report = evicted_text(name, before.saturating_sub(left));
+                self.eviction = Eviction::Idle;
+                Some(report)
+            }
+            _ => None,
+        };
         if self.selected_index(building).is_none() {
             self.selected = None;
             self.view = View::Roll;
         }
-        if let Eviction::Gone {
-            tenant,
-            name,
-            before,
-        } = &self.eviction
-        {
-            let left = building
-                .tenants
-                .iter()
-                .find(|t| &t.id == tenant)
-                .map_or(0, |t| t.rent_bytes);
-            self.eviction = Eviction::Done {
-                name: name.clone(),
-                vacated: before.saturating_sub(left),
-            };
-        }
+        report
     }
 
     fn select(&mut self, building: &Building, index: usize, view: View) {
@@ -731,17 +727,17 @@ mod tests {
         assert!(matches!(ui.eviction, Eviction::Asking { .. }));
         ui.poll(&[], 4_000);
         assert!(matches!(ui.eviction, Eviction::Gone { .. }));
-        // The next sample says how much was vacated; nothing is promised before.
+        // The next sample without Chrome says how much was vacated; nothing
+        // is promised before. The dialog closes and the rent roll returns.
         let mut after = w.building.clone();
         after.tenants.remove(0);
-        ui.sampled(&after);
         assert_eq!(
-            ui.eviction.message().unwrap(),
-            "Evicted CHROME. 2.9 GB vacated."
+            ui.sampled(&after).as_deref(),
+            Some("Evicted CHROME. 2.9 GB vacated.")
         );
-        assert_eq!(ui.selected, None);
-        key(&mut ui, &w, Key::Enter);
         assert_eq!(ui.eviction, Eviction::Idle);
+        assert_eq!(ui.selected, None);
+        assert_eq!(ui.view, View::Roll);
     }
 
     #[test]
