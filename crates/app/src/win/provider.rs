@@ -375,13 +375,15 @@ impl Provider {
             }
             let opened = open(pid);
             let path = opened.as_ref().and_then(|o| o.path.clone());
+            // Session 0 processes are always Staff and never named, so
+            // their version resources are not worth reading.
             let description = match &path {
-                Some(path) => self
+                Some(path) if session != 0 => self
                     .descriptions
                     .entry(path.clone())
                     .or_insert_with(|| file_description(path))
                     .clone(),
-                None => None,
+                _ => None,
             };
             let counters = opened.as_ref().and_then(|o| o.counters.as_ref());
             private.push(counters.map_or(Some(0), |c| c.private_ws));

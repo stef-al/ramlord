@@ -1,6 +1,7 @@
 //! Checks a live snapshot written by `ramlord --dump` (M2). Set
-//! `RAMLORD_DUMP` to its path; without it this test does nothing. CI sets
-//! it on the Windows runner:
+//! `RAMLORD_DUMP` to its path (relative paths start at the repository
+//! root); without it this test does nothing. CI sets it on the Windows
+//! runner:
 //!
 //! ```text
 //! ramlord --dump out/dump.json
@@ -18,7 +19,18 @@ fn a_live_dump_groups_into_staff_tenants_and_vacant_that_sum_to_capacity() {
         eprintln!("RAMLORD_DUMP is not set; nothing to check");
         return;
     };
-    let text = std::fs::read_to_string(&path).expect("read the dump");
+    // A relative path is taken from the repository root: cargo runs tests
+    // from the crate's folder.
+    let path = std::path::PathBuf::from(path);
+    let path = if path.is_relative() {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(path)
+    } else {
+        path
+    };
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read the dump {}: {e}", path.display()));
     let snapshot = Snapshot::from_json(&text).expect("the dump is a snapshot");
 
     assert!(

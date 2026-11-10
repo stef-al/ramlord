@@ -31,7 +31,8 @@ pub struct Process {
     pub session: u32,
     /// None when the process cannot be opened.
     pub image_path: Option<String>,
-    /// FileDescription of the image.
+    /// FileDescription of the image. None when unknown, and for session 0
+    /// processes, which are always Staff and never named.
     pub description: Option<String>,
     /// Private working set.
     pub rent_bytes: u64,
