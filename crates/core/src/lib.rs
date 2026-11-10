@@ -19,10 +19,12 @@ pub mod date;
 pub mod font;
 pub mod format;
 pub mod layout;
+pub mod live;
 pub mod palette;
 pub mod render;
 pub mod rules;
 pub mod scene;
+pub mod smooth;
 pub mod snapshot;
 pub mod tenants;
 

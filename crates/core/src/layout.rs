@@ -177,7 +177,25 @@ impl Layout {
     /// Divides `building` (rules 1 to 6) and gives every named tenant a hue.
     /// Returns the layout and the hue book with any new tenants added.
     pub fn new(building: &Building, saved_hues: &HueBook) -> (Layout, HueBook) {
-        let (named, merged) = split_named(building);
+        Layout::ordered(building, saved_hues, &[])
+    }
+
+    /// Like `new`, but named tenants fill in the order of `order` (tenant
+    /// ids, as the smoother keeps it); any not listed follow by rank. Which
+    /// tenants are named still depends on rank alone.
+    pub fn ordered(
+        building: &Building,
+        saved_hues: &HueBook,
+        order: &[String],
+    ) -> (Layout, HueBook) {
+        let (mut named, merged) = split_named(building);
+        if !order.is_empty() {
+            let place = |t: &usize| {
+                let id = &building.tenants[*t].id;
+                order.iter().position(|o| o == id).unwrap_or(usize::MAX)
+            };
+            named.sort_by_key(place);
+        }
 
         // Rule 3: fill order is Staff, named tenants, Others, Vacant.
         let mut entries = vec![Entry {
@@ -543,6 +561,28 @@ mod tests {
         // A tenant that is not named now keeps its hue but does not count.
         assert_eq!(book["gone"], 3);
         assert!(!book.contains_key("broken"));
+    }
+
+    #[test]
+    fn an_explicit_order_rearranges_named_tenants_only() {
+        let b = building(
+            1000 * MIB,
+            &[("A", 3000 * MIB), ("B", 2000 * MIB), ("C", 10 * MIB)],
+            2182 * MIB,
+        );
+        let order = vec!["b".to_string(), "a".to_string()];
+        let (layout, _) = Layout::ordered(&b, &HueBook::new(), &order);
+        let fill: Vec<&str> = layout
+            .named
+            .iter()
+            .map(|n| b.tenants[n.tenant].name.as_str())
+            .collect();
+        assert_eq!(fill, ["B", "A"]);
+        assert_eq!(layout.merged, [2]);
+        assert_eq!(
+            layout.cells[layout.units_of(Owner::Staff) as usize],
+            Owner::Tenant(1)
+        );
     }
 
     #[test]

@@ -78,6 +78,28 @@ impl Shown {
             self.text(symbol)
         }
     }
+
+    /// The amount as shown in a column of at most `max` characters (no
+    /// limit with `None`). An estimate starts with `~`. When the column is
+    /// too narrow, the leading zero goes first, then the `~`.
+    pub fn fit(self, symbol: &str, estimate: bool, max: Option<usize>) -> String {
+        let text = self.text(symbol);
+        let narrow = self.text_narrow(symbol);
+        let mut candidates = Vec::new();
+        if estimate {
+            candidates.push(format!("~{text}"));
+            candidates.push(format!("~{narrow}"));
+        }
+        candidates.push(text);
+        candidates.push(narrow);
+        let fits = |s: &&String| max.is_none_or(|m| s.chars().count() <= m);
+        candidates
+            .iter()
+            .find(fits)
+            .or(candidates.last())
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 /// Whole currency units, halves rounded up.
@@ -206,6 +228,27 @@ mod tests {
         assert_eq!(Shown::rent(995_000).text("$"), "$1");
         assert_eq!(Shown::rent(994_999).text("$"), "$0.99");
         assert_eq!(Shown::rent(1_499_999).text_narrow("$"), "$1");
+    }
+
+    #[test]
+    fn estimates_start_with_a_tilde_where_it_fits() {
+        let rent = Shown::rent(91_780_000);
+        assert_eq!(rent.fit("$", false, None), "$92");
+        assert_eq!(rent.fit("$", true, None), "~$92");
+        assert_eq!(rent.fit("$", true, Some(4)), "~$92");
+        let big = Shown::rent(141_000_000);
+        assert_eq!(big.fit("$", true, Some(5)), "~$141");
+        assert_eq!(big.fit("$", true, Some(4)), "$141");
+        let small = Shown::rent(434_000);
+        assert_eq!(small.fit("$", true, None), "~$0.43");
+        assert_eq!(small.fit("$", true, Some(5)), "~$.43");
+        assert_eq!(small.fit("$", true, Some(4)), "$.43");
+        assert_eq!(small.fit("$", false, Some(4)), "$.43");
+        assert_eq!(Shown::rent(1_234_000_000).fit("$", false, Some(4)), "$1234");
+        assert_eq!(
+            Shown::rent(12_345_000_000).fit("$", false, Some(4)),
+            "$12345"
+        );
     }
 
     #[test]

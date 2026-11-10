@@ -148,7 +148,10 @@ fn label_strips(building: &Building, layout: &Layout) -> Vec<(usize, Strip)> {
         let extra = if arrow { 2 + ADVANCE } else { 0 };
         let name = tenant.name.to_uppercase();
         let rent = Shown::rent(micros(tenant.rent_bytes, building.price.per_gb_micros));
-        let full = format!("{name} {}", rent.text(symbol));
+        let full = format!(
+            "{name} {}",
+            rent.fit(symbol, building.rent_is_estimate, None)
+        );
         let fits = |s: &String| s.chars().count() as i32 * ADVANCE + extra <= room;
         if let Some(label) = [full, name].into_iter().find(fits) {
             let needed = label.chars().count() as i32 * ADVANCE + extra + 3;
@@ -388,6 +391,9 @@ pub fn tower(building: &Building, layout: &Layout) -> Vec<Draw> {
 /// The rent roll panel: 224, 10, 154 by 204.
 fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
     let symbol = building.price.symbol.as_str();
+    let estimate = building.rent_is_estimate;
+    // The rent column holds four characters.
+    let column = |amount: Shown, estimate: bool| amount.fit(symbol, estimate, Some(4));
     let (lx0, lx1) = (224, 377);
     let gb_right = lx0 + 121;
     let rent_right = lx1 - 5;
@@ -441,7 +447,7 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
         d.push(Draw::text_right(
             rent_right,
             y,
-            row.rent.text_narrow(symbol),
+            column(row.rent, estimate),
             TEXT,
             1,
         ));
@@ -459,7 +465,7 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
         d.push(Draw::text_right(
             rent_right,
             y,
-            rent.text_narrow(symbol),
+            column(rent, estimate),
             TEXT_DIM,
             1,
         ));
@@ -472,18 +478,20 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
     d.push(Draw::text_right(
         rent_right,
         y,
-        roll.owed.text(symbol),
+        roll.owed.fit(symbol, estimate, None),
         GOLD,
         1,
     ));
     y += 12;
-    for (swatch, label, bytes, rent, color) in [
+    // Vacant is measured, not estimated; Staff is what rent leaves.
+    for (swatch, label, bytes, rent, color, estimated) in [
         (
             STAFF_WALL,
             "STAFF",
             building.staff_bytes,
             roll.staff,
             TEXT_DIM,
+            estimate,
         ),
         (
             VACANT_WINDOW,
@@ -491,6 +499,7 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
             building.vacant_bytes,
             roll.vacant,
             GOOD,
+            false,
         ),
     ] {
         d.push(Draw::rect(lx0 + 5, y, lx0 + 9, y + 6, swatch));
@@ -499,7 +508,7 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
         d.push(Draw::text_right(
             rent_right,
             y,
-            rent.text_narrow(symbol),
+            column(rent, estimated),
             color,
             1,
         ));
@@ -515,7 +524,7 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
     d.push(Draw::text_right(
         rent_right,
         y,
-        roll.office.text(symbol),
+        roll.office.fit(symbol, estimate, None),
         TEXT_DIM,
         1,
     ));
@@ -552,6 +561,9 @@ impl Line {
 /// over a `SKY` background.
 pub fn card(building: &Building, layout: &Layout) -> Vec<Draw> {
     let symbol = building.price.symbol.as_str();
+    let estimate = building.rent_is_estimate;
+    // The card's rent column holds five characters.
+    let column = |amount: Shown, estimate: bool| amount.fit(symbol, estimate, Some(5));
     let (x0, x1) = (22, 217);
     let date = building.reading_date();
     let roll = Roll::new(building, layout);
@@ -580,7 +592,7 @@ pub fn card(building: &Building, layout: &Layout) -> Vec<Draw> {
             name: row.name.clone(),
             tag: row.tag,
             size: size(row.bytes),
-            rent: row.rent.text(symbol),
+            rent: column(row.rent, estimate),
         });
     }
     if let Some((count, bytes, rent)) = roll.others {
@@ -588,7 +600,7 @@ pub fn card(building: &Building, layout: &Layout) -> Vec<Draw> {
             name: format!("OTHERS ({count})"),
             tag: None,
             size: size(bytes),
-            rent: rent.text(symbol),
+            rent: column(rent, estimate),
         });
     }
     lines.push(Line::Rule);
@@ -597,7 +609,7 @@ pub fn card(building: &Building, layout: &Layout) -> Vec<Draw> {
         name: "VACANT".into(),
         tag: None,
         size: size(building.vacant_bytes),
-        rent: roll.vacant.text(symbol),
+        rent: column(roll.vacant, false),
     });
     lines.push(Line::Rule);
     let remark = cut(&building.remark, REMARK_MAX).to_uppercase();
@@ -679,7 +691,7 @@ pub fn card(building: &Building, layout: &Layout) -> Vec<Draw> {
                     shadow: None,
                     scale: 2,
                 });
-                total_amount(&mut d, x1 - 6, y + 1, *owed, symbol);
+                total_amount(&mut d, x1 - 6, y + 1, *owed, symbol, estimate);
             }
             Line::Gap => {}
         }
@@ -691,8 +703,16 @@ pub fn card(building: &Building, layout: &Layout) -> Vec<Draw> {
 /// RENT OWED on the card in double-size type. Cents, when the total has
 /// any, follow in single size like a price tag, so the amount never runs
 /// into the label.
-fn total_amount(d: &mut Vec<Draw>, x_right: i32, y: i32, owed: Shown, symbol: &str) {
-    let whole = format!("{symbol}{}", owed.cents / 100);
+fn total_amount(
+    d: &mut Vec<Draw>,
+    x_right: i32,
+    y: i32,
+    owed: Shown,
+    symbol: &str,
+    estimate: bool,
+) {
+    let tilde = if estimate { "~" } else { "" };
+    let whole = format!("{tilde}{symbol}{}", owed.cents / 100);
     if !owed.with_cents {
         d.push(Draw::text_right(x_right, y, whole, INK, 2));
         return;
@@ -885,6 +905,30 @@ mod tests {
             .filter(|t| t.starts_with('X'))
             .collect();
         assert_eq!(lines, ["X".repeat(30), "X".repeat(30)]);
+    }
+
+    #[test]
+    fn estimated_amounts_start_with_a_tilde_except_vacant() {
+        let mut b = Building::from_json(SAMPLE).unwrap();
+        b.rent_is_estimate = true;
+        let l = layout(&b);
+        let panel = tower(&b, &l);
+        for text in [
+            "CHROME ~$92",
+            "~$92",
+            "~$241",
+            "~$78",
+            "$141",
+            "~$0.43",
+            "~$1",
+        ] {
+            assert!(has_text(&panel, text), "panel lacks {text}");
+        }
+        assert!(!has_text(&panel, "~$141"));
+        let receipt = card(&b, &l);
+        for text in ["~$92", "~$241", "$141", "~$1"] {
+            assert!(has_text(&receipt, text), "card lacks {text}");
+        }
     }
 
     #[test]
