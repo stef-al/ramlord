@@ -129,7 +129,7 @@ fn run(minimized: bool) -> ExitCode {
         .map(store::load_family)
         .unwrap_or_default();
     let content = win::shell::Content::Live {
-        provider: win::provider::Provider::new(),
+        provider: Box::new(win::provider::Provider::new()),
         live: Box::new(ramlord_core::live::Live::new(
             Rules::builtin(),
             Lease::placeholder(),

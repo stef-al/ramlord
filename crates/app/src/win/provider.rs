@@ -40,6 +40,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
+use super::counters::{self, Gpu};
+
 /// A process handle that closes itself.
 pub(super) struct Handle(pub(super) HANDLE);
 
@@ -447,15 +449,19 @@ pub fn foreground_pid() -> Option<u32> {
     (!foreground.is_invalid()).then(|| window_owner(foreground))
 }
 
-/// Visible windows are enumerated every 5 seconds (SPEC.md, Timing).
+/// Visible windows are enumerated every 5 seconds (SPEC.md, Timing), and
+/// graphics memory, which takes longer to read, as often.
 const WINDOWS_EVERY_MS: u64 = 5_000;
 
 /// Builds snapshots. Keeps FileDescriptions by image path, so each image's
-/// version resource is read once, and the visible windows for 5 seconds.
+/// version resource is read once, and the visible windows and graphics
+/// memory for 5 seconds.
 pub struct Provider {
     descriptions: HashMap<String, Option<String>>,
     visible: BTreeSet<u32>,
     windows_at_ms: Option<u64>,
+    counters: counters::Counters,
+    gpu: Gpu,
 }
 
 impl Provider {
@@ -464,6 +470,8 @@ impl Provider {
             descriptions: HashMap::new(),
             visible: BTreeSet::new(),
             windows_at_ms: None,
+            counters: counters::Counters::new(),
+            gpu: Gpu::default(),
         }
     }
 
@@ -502,9 +510,11 @@ impl Provider {
                 .filter(|&w| is_app_window(w))
                 .map(window_owner)
                 .collect();
+            self.gpu = self.counters.gpu();
             self.windows_at_ms = Some(at_ms);
         }
         let visible = &self.visible;
+        let memory = self.counters.memory();
         let foreground_pid = foreground_pid();
 
         let listed = process_list()?;
@@ -547,6 +557,8 @@ impl Provider {
                 rent_bytes: e.private_ws,
                 lease_bytes: e.commit,
                 working_set_bytes: e.ws,
+                gpu_shared_bytes: self.gpu.shared.get(&e.pid).copied().unwrap_or(0),
+                gpu_dedicated_bytes: self.gpu.dedicated.get(&e.pid).copied().unwrap_or(0),
                 has_visible_window: visible.contains(&e.pid),
                 is_self: e.pid == self_pid,
             });
@@ -591,6 +603,14 @@ impl Provider {
             kernel_paged_bytes: perf.KernelPaged as u64 * page,
             kernel_nonpaged_bytes: perf.KernelNonpaged as u64 * page,
             system_cache_bytes: perf.SystemCache as u64 * page,
+            kernel_paged_resident_bytes: memory.paged_resident,
+            file_cache_bytes: memory.file_cache,
+            driver_bytes: memory.drivers,
+            kernel_code_bytes: memory.kernel_code,
+            modified_bytes: memory.modified,
+            standby_bytes: memory.standby,
+            free_bytes: memory.free,
+            gpu_shared_bytes: self.gpu.adapters_shared,
         })
     }
 }

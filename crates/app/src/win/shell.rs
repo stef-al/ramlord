@@ -75,7 +75,7 @@ pub enum Content {
     /// The PC itself. `state_path` is where `state.json` is saved,
     /// `settings_path` where the Family list is.
     Live {
-        provider: Provider,
+        provider: Box<Provider>,
         live: Box<Live>,
         state_path: Option<PathBuf>,
         settings_path: Option<PathBuf>,

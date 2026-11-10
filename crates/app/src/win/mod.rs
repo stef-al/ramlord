@@ -2,11 +2,13 @@
 //! directly through Microsoft's `windows` crate and stays thin; all
 //! behaviour lives in `ramlord-core`.
 //!
-//! - `provider` builds a Snapshot.
+//! - `provider` builds a Snapshot; `counters` reads Windows' performance
+//!   counters for it (memory lists, kernel parts, graphics memory).
 //! - `shell` is the window: whole-number scaling, the 2 second sampling
 //!   loop, redraws only when the scene changes, clicks and keys.
 //! - `evict` closes and, when asked, terminates a tenant's processes.
 
+pub mod counters;
 pub mod evict;
 pub mod provider;
 pub mod shell;

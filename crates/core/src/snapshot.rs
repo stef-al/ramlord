@@ -23,14 +23,49 @@ pub struct Snapshot {
     /// reserves. 0 when unknown. For diagnosis; the layout does not use it.
     #[serde(default)]
     pub physical_total_bytes: u64,
-    /// Kernel paged and nonpaged pools: part of Staff. For diagnosis.
+    /// The kernel's paged pool, all of it: some may be in the page file.
+    /// For diagnosis; Staff uses `kernel_paged_resident_bytes`.
     #[serde(default)]
     pub kernel_paged_bytes: u64,
+    /// The kernel's nonpaged pool: always in RAM, part of Staff.
     #[serde(default)]
     pub kernel_nonpaged_bytes: u64,
-    /// The system file cache's working set: part of Staff. For diagnosis.
+    /// GetPerformanceInfo's SystemCache: the standby list plus the system
+    /// working set, so partly Vacant. For diagnosis only.
     #[serde(default)]
     pub system_cache_bytes: u64,
+
+    // From Windows' performance counters (Memory object). 0 when unknown,
+    // as under Wine.
+    /// The part of the paged pool in RAM (Pool Paged Resident Bytes).
+    #[serde(default)]
+    pub kernel_paged_resident_bytes: u64,
+    /// The file cache in RAM (System Cache Resident Bytes).
+    #[serde(default)]
+    pub file_cache_bytes: u64,
+    /// Drivers' pageable code and data in RAM (System Driver Resident Bytes).
+    #[serde(default)]
+    pub driver_bytes: u64,
+    /// The kernel's pageable code in RAM (System Code Resident Bytes).
+    #[serde(default)]
+    pub kernel_code_bytes: u64,
+    /// Changed pages waiting to be written to disk (Modified Page List
+    /// Bytes): in use by nobody, not yet available.
+    #[serde(default)]
+    pub modified_bytes: u64,
+    /// The standby list (the three Standby Cache counters): part of
+    /// Available.
+    #[serde(default)]
+    pub standby_bytes: u64,
+    /// Free and zeroed pages (Free & Zero Page List Bytes): the rest of
+    /// Available.
+    #[serde(default)]
+    pub free_bytes: u64,
+    /// Memory the graphics adapters use in RAM (GPU Adapter Memory, Shared
+    /// Usage, all adapters): the gallery. Not in any process's working
+    /// set. 0 when unknown.
+    #[serde(default)]
+    pub gpu_shared_bytes: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -58,6 +93,15 @@ pub struct Process {
     /// The whole working set, shared pages included. 0 when unknown.
     #[serde(default)]
     pub working_set_bytes: u64,
+    /// Graphics memory this process holds in RAM (GPU Process Memory,
+    /// Shared Usage): its pictures in the gallery. Not part of its working
+    /// set; charged to its commit. 0 when unknown.
+    #[serde(default)]
+    pub gpu_shared_bytes: u64,
+    /// Graphics memory on a graphics card's own memory (Dedicated Usage).
+    /// Not RAM: for diagnosis only.
+    #[serde(default)]
+    pub gpu_dedicated_bytes: u64,
     pub has_visible_window: bool,
     pub is_self: bool,
 }
