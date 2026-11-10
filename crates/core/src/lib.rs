@@ -7,9 +7,9 @@
 //!
 //! `tests/purity.rs` scans this crate's sources and fails on a breach.
 //!
-//! The pipeline so far: a [`Building`] is divided by [`layout`] into 256
-//! units, [`scene`] turns it into a draw list, and [`render`] turns the
-//! draw list into a [`Frame`].
+//! The pipeline so far: [`tenants`] groups a [`Snapshot`] into a
+//! [`Building`], [`layout`] divides it into 256 units, [`scene`] turns it
+//! into a draw list, and [`render`] turns the draw list into a [`Frame`].
 
 #![forbid(unsafe_code)]
 #![deny(clippy::float_arithmetic)]
@@ -21,11 +21,16 @@ pub mod format;
 pub mod layout;
 pub mod palette;
 pub mod render;
+pub mod rules;
 pub mod scene;
+pub mod snapshot;
+pub mod tenants;
 
 pub use building::{Building, BuildingError, Flag, Price, Tenant};
 pub use layout::{HueBook, Layout};
 pub use render::Frame;
+pub use rules::Rules;
+pub use snapshot::Snapshot;
 
 /// Draws the tower window, 384 by 240. Returns the frame and `saved_hues`
 /// with any new tenants' hues added.

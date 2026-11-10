@@ -11,6 +11,13 @@ launchers = ["cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe", "ws
   "bash.exe", "steam.exe", "epicgameslauncher.exe", "galaxyclient.exe",
   "battle.net.exe", "eadesktop.exe", "upc.exe", "riotclientservices.exe"]
 
+# A tenant without an entry in [names] is named after its FileDescription,
+# without a leading company word from this list ("Microsoft Teams" is
+# "Teams"). The word is kept when it is the whole description.
+companies = ["adobe", "amd", "apple", "asus", "brave", "dell", "google", "hp", "intel",
+  "lenovo", "logitech", "microsoft", "mozilla", "nvidia", "opera", "oracle", "realtek",
+  "valve"]
+
 [helpers]
 "msedgewebview2.exe" = "parent"
 "crashpad_handler.exe" = "parent"

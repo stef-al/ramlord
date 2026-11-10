@@ -71,6 +71,18 @@ pub struct Price {
     pub as_of: String,
 }
 
+impl Price {
+    /// The DDR5 price from `prices.json`, used for live buildings until M5
+    /// reads the price file and detects the memory type.
+    pub fn placeholder() -> Price {
+        Price {
+            per_gb_micros: 14_340_000,
+            symbol: "$".into(),
+            as_of: "2026-11-03".into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Building {
@@ -88,6 +100,10 @@ pub struct Building {
     pub own_bytes: u64,
     /// The landlord's remark, at most 60 characters.
     pub remark: String,
+    /// Rent is the whole working set, not the private one: amounts derived
+    /// from rent are shown with a `~` in front.
+    #[serde(default)]
+    pub rent_is_estimate: bool,
     pub tenants: Vec<Tenant>,
 }
 
@@ -123,7 +139,8 @@ impl std::fmt::Display for BuildingError {
             BuildingError::ZeroPrice => write!(f, "price.per_gb_micros is 0"),
             BuildingError::Unbalanced { capacity, sum } => write!(
                 f,
-                "staff + tenants' rent + vacant is {sum} bytes, capacity is {capacity}"
+                "staff + tenants' rent + vacant is {sum} bytes, capacity is {capacity} \
+                 (only an overfull building, with no staff and no vacancy, may exceed it)"
             ),
             BuildingError::EmptyId => write!(f, "a tenant has an empty id"),
             BuildingError::DuplicateId(id) => write!(f, "tenant id {id:?} appears twice"),
@@ -168,7 +185,12 @@ impl Building {
                 .iter()
                 .map(|t| u128::from(t.rent_bytes))
                 .sum::<u128>();
-        if sum != u128::from(self.capacity_bytes) {
+        // Estimated rent alone can exceed capacity; Staff and Vacant are
+        // then zero and the building is overfull.
+        let overfull = self.staff_bytes == 0
+            && self.vacant_bytes == 0
+            && sum > u128::from(self.capacity_bytes);
+        if sum != u128::from(self.capacity_bytes) && !overfull {
             return Err(BuildingError::Unbalanced {
                 capacity: self.capacity_bytes,
                 sum,
@@ -188,6 +210,15 @@ impl Building {
     /// Total rent of all tenants.
     pub fn rent_bytes(&self) -> u64 {
         self.tenants.iter().map(|t| t.rent_bytes).sum()
+    }
+
+    /// What the 256 units divide: capacity, or more in an overfull building.
+    pub fn split_bytes(&self) -> u64 {
+        let sum = self
+            .staff_bytes
+            .saturating_add(self.vacant_bytes)
+            .saturating_add(self.rent_bytes());
+        self.capacity_bytes.max(sum)
     }
 
     /// Occupied share of the building in whole percent, halves rounded up.
@@ -227,6 +258,7 @@ pub(crate) fn test_building(staff: u64, tenants: &[(&str, u64)], vacant: u64) ->
         staff_bytes: staff,
         own_bytes: 0,
         remark: String::new(),
+        rent_is_estimate: false,
         tenants: tenants
             .iter()
             .map(|&(name, rent_bytes)| Tenant {
@@ -304,6 +336,19 @@ mod tests {
         assert!(matches!(
             Building::from_json(&unknown_flag),
             Err(BuildingError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn an_overfull_building_needs_no_staff_and_no_vacancy() {
+        let mut b = test_building(0, &[("A", 300), ("B", 200)], 0);
+        b.capacity_bytes = 400;
+        assert_eq!(b.validate(), Ok(()));
+        assert_eq!(b.split_bytes(), 500);
+        b.vacant_bytes = 1;
+        assert!(matches!(
+            b.validate(),
+            Err(BuildingError::Unbalanced { .. })
         ));
     }
 

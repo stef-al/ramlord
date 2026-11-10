@@ -46,6 +46,26 @@ impl Date {
         valid.then_some(date)
     }
 
+    /// The UTC date of a time in milliseconds since 1970.
+    pub fn from_unix_ms(ms: u64) -> Date {
+        // Howard Hinnant's civil_from_days, in integers.
+        let z = (ms / 86_400_000) as i64 + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+        let year = (yoe + era * 400 + i64::from(month <= 2)) as u32;
+        Date { year, month, day }
+    }
+
+    /// `YYYY-MM-DD`.
+    pub fn iso(self) -> String {
+        format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+
     /// Three-letter month, such as `NOV`.
     pub fn month_name(self) -> &'static str {
         MONTHS[(self.month - 1) as usize]
@@ -110,6 +130,23 @@ mod tests {
         assert_eq!(Date::parse("2026-11-03").unwrap().weekday_name(), "TUE");
         assert_eq!(Date::parse("2000-01-01").unwrap().weekday_name(), "SAT");
         assert_eq!(Date::parse("2024-02-29").unwrap().weekday_name(), "THU");
+    }
+
+    #[test]
+    fn dates_from_unix_milliseconds() {
+        assert_eq!(Date::from_unix_ms(0).iso(), "1970-01-01");
+        assert_eq!(Date::from_unix_ms(1_794_268_800_000).iso(), "2026-11-10");
+        assert_eq!(
+            Date::from_unix_ms(1_794_268_800_000 - 1).iso(),
+            "2026-11-09"
+        );
+        assert_eq!(Date::from_unix_ms(951_782_400_000).iso(), "2000-02-29");
+        assert_eq!(
+            Date::from_unix_ms(1_735_603_200_000 + 86_399_999).iso(),
+            "2024-12-31"
+        );
+        let d = Date::from_unix_ms(1_794_268_800_000);
+        assert_eq!(Date::parse(&d.iso()), Some(d));
     }
 
     #[test]

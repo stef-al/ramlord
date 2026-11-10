@@ -202,7 +202,7 @@ impl Layout {
             bytes: building.vacant_bytes,
             units: 0,
         });
-        divide(building.capacity_bytes, &mut entries);
+        divide(building.split_bytes(), &mut entries);
 
         // Rule 6: fill from the ground floor up, left to right.
         let mut cells = Vec::with_capacity(UNITS);
