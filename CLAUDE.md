@@ -15,7 +15,7 @@ fixtures/      buildings and snapshots as JSON; timelines/ for flags over time;
                golden/ holds the expected PNGs
 rules/         windows.toml: how processes become tenants, built into the exe
 prices.json    price per GB by memory type (used from M5)
-scripts/       wine-run.sh and wine-demo.sh: rung 4
+scripts/       wine-run.sh, wine-demo.sh and wine-evict.sh: rung 4
 docs/evidence/ screenshots and reports behind each milestone's boxes
 ```
 
@@ -51,6 +51,19 @@ of every timeline, with:
 ```bash
 RAMLORD_PNG_DIR=/some/dir cargo test -p ramlord-core --test flags
 ```
+
+`details-card.png` is Discord's card on the sample building. The input
+tests write it as `details-discord.png`, with Chrome's card and every
+eviction dialog on the desk snapshot:
+
+```bash
+RAMLORD_PNG_DIR=/some/dir cargo test -p ramlord-core --test input
+```
+
+Clicks and keys go through `ramlord_core::ui`: `scene::window` returns
+the click regions with the draw list, `Ui::input` turns a click or key into
+`Command`s for the Windows layer, and eviction is the `Eviction` state
+machine. `crates/app/src/win/evict.rs` only carries the commands out.
 
 Timelines (`fixtures/timelines/*.json`, format in
 `crates/core/tests/timeline/mod.rs`) describe hours of samples, sleeps and
@@ -93,10 +106,14 @@ mode not available on this platform, 6 when the window fails and 7 when
 - `gh pr` and `gh issue` do not work in cloud sessions; the owner creates pull
   requests. Do not start a milestone that was not asked for.
 - Until M5, a live building's price line says `RAM` at the DDR5 price
-  (`Lease::placeholder`), and the Family list is empty.
+  (`Lease::placeholder`), and F2 and F3 do nothing.
 - The live app keeps `state.json` in `%APPDATA%\RAMlord\` (hues, watched
-  time, flags' counters). `--dump`, `--snapshot` and `--self-test` never
-  read or write it.
+  time, flags' counters) and the Family list in `settings.json` beside it.
+  It keeps the other keys in `settings.json`, so M5's settings can share
+  the file. `--dump`, `--snapshot` and `--self-test` never read or write
+  either file.
+- Eviction never happens without the user: one confirmation, a polite
+  `WM_CLOSE` first, and Esc in any dialog changes nothing. Keep it that way.
 
 ## The six verification rungs
 
@@ -119,6 +136,15 @@ WINEPREFIX=$PWD/scripts/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
   scripts/wine-run.sh target/x86_64-pc-windows-gnu/release/ramlord.exe shot.png
 ```
 
+Evicting Notepad from the running app (M4). Add `force` to give Notepad
+unsaved text first and force it out after it refuses. It needs `xdotool`:
+
+```bash
+WINEPREFIX=$PWD/scripts/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
+  xvfb-run -a -s "-screen 0 1920x1080x24" \
+  scripts/wine-evict.sh target/x86_64-pc-windows-gnu/release/ramlord.exe shots/
+```
+
 `--dump` and `--self-test` run under Wine too (`wine ramlord.exe --dump
 out.json` inside `xvfb-run`). Wine reports no private working set, so rent
 there is estimated and amounts show a `~`.
@@ -127,7 +153,7 @@ Tools for rungs 3 and 4, if missing:
 
 ```bash
 rustup target add x86_64-pc-windows-gnu
-apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 wine wine64 xvfb imagemagick
+apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 wine wine64 xvfb imagemagick xdotool
 ```
 
 ## CI

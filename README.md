@@ -11,8 +11,11 @@ account, sends no telemetry and asks for no admin rights.
 
 **Status:** early development. On Windows, `ramlord` shows your real apps
 in the tower, updating every 2 seconds, tags the ones you forgot (AWAY,
-WALLS, SQUAT, LEAK) and has the landlord say something about it. Eviction,
-prices for your memory type, settings and the tray come next. See
+WALLS, SQUAT, LEAK) and has the landlord say something about it. Click a
+tenant (or use Up, Down and Enter) for its details card; from there you
+can mark it Family or evict it. Eviction always asks first, then asks the
+app to close like its own close button would, and only forces it out if
+you say so. Prices for your memory type, settings and the tray come next. See
 [SPEC.md](SPEC.md) for the full design and the milestones.
 
 ## Build
