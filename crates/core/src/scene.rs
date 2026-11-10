@@ -740,6 +740,14 @@ pub fn span_text(ms: u64) -> String {
     }
 }
 
+/// "JUST NOW", "5 MIN AGO", "3 H AGO".
+pub fn ago_text(ms: u64) -> String {
+    match span_text(ms) {
+        now if ms < 60_000 => now,
+        span => format!("{span} AGO"),
+    }
+}
+
 /// A tenant's flags in words, such as "LEAKING, NOT HOME".
 pub fn flags_in_words(tenant: &Tenant, family: bool) -> String {
     let mut words = Vec::new();
@@ -853,20 +861,10 @@ fn details_panel(
         ("AN HOUR AGO", details.hour_ago_bytes.map_or("-".into(), gb)),
         ("PACKED", gb(tenant.packed_bytes)),
         ("PROCESSES", tenant.process_count.to_string()),
-        (
-            "MOVED IN",
-            details
-                .moved_in_ms
-                .map_or("-".into(), |ms| format!("{} AGO", span_text(ms))),
-        ),
+        ("MOVED IN", details.moved_in_ms.map_or("-".into(), ago_text)),
         (
             "LAST VISIT",
-            details
-                .last_visit_ms
-                .map_or("NEVER".into(), |ms| match span_text(ms).as_str() {
-                    "JUST NOW" => "JUST NOW".to_string(),
-                    span => format!("{span} AGO"),
-                }),
+            details.last_visit_ms.map_or("NEVER".into(), ago_text),
         ),
     ];
     let mut y = 51;
@@ -1433,5 +1431,14 @@ mod tests {
         let l = layout(&b);
         assert_eq!(Roll::new(&b, &l).rows[0].name, "Google C");
         assert!(has_text(&card(&b, &l), "Google C"));
+    }
+
+    #[test]
+    fn spans_read_as_words() {
+        assert_eq!(ago_text(0), "JUST NOW");
+        assert_eq!(ago_text(59_999), "JUST NOW");
+        assert_eq!(ago_text(60_000), "1 MIN AGO");
+        assert_eq!(ago_text(3 * 3_600_000), "3 H AGO");
+        assert_eq!(ago_text(50 * 3_600_000), "2 D AGO");
     }
 }
