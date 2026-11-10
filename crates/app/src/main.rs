@@ -119,19 +119,25 @@ fn demo() -> ExitCode {
 
 #[cfg(windows)]
 fn run(minimized: bool) -> ExitCode {
-    // Watched time, flags and hues carry over from the last run. The
-    // Family list is a setting; until settings arrive (M5) it is empty.
+    // Watched time, flags and hues carry over from the last run; the
+    // Family list is kept in settings.json.
     let state_path = store::state_path();
     let state = state_path.as_deref().map(store::load).unwrap_or_default();
+    let settings_path = store::settings_path();
+    let family = settings_path
+        .as_deref()
+        .map(store::load_family)
+        .unwrap_or_default();
     let content = win::shell::Content::Live {
         provider: win::provider::Provider::new(),
         live: Box::new(ramlord_core::live::Live::new(
             Rules::builtin(),
             Lease::placeholder(),
             state,
-            Default::default(),
+            family,
         )),
         state_path,
+        settings_path,
     };
     match win::shell::show(content, minimized) {
         Ok(()) => ExitCode::SUCCESS,

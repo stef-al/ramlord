@@ -8,13 +8,20 @@
 //! every second, and redraws only when the frame changes. It saves
 //! `state.json` every minute and when the window closes. Closing the
 //! window ends the program; the tray comes with M5.
+//!
+//! Clicks and keys go to the core, which answers with commands: close or
+//! terminate a tenant's processes, open Startup settings, save the Family
+//! list. While an eviction waits, a timer polls the processes four times
+//! a second.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use ramlord_core::Frame;
 use ramlord_core::live::Live;
 use ramlord_core::render::pick_scale;
+use ramlord_core::ui::{Command, Input, Key};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, COLORONCOLOR, DIB_RGB_COLORS, EndPaint,
@@ -27,16 +34,21 @@ use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
     SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    VIRTUAL_KEY, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_F2, VK_F3, VK_RETURN, VK_UP,
+};
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetMessageW, IDC_ARROW, IsIconic, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SW_SHOW,
-    SW_SHOWMINNOACTIVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetTimer, SetWindowPos,
-    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_DISPLAYCHANGE,
-    WM_DPICHANGED, WM_ERASEBKGND, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX,
-    WS_OVERLAPPED, WS_SYSMENU,
+    GetMessageW, IDC_ARROW, IsIconic, KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW,
+    SW_SHOW, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetTimer,
+    SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER,
+    WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
 };
 use windows::core::w;
 
+use super::evict::Evictor;
 use super::provider::Provider;
 
 /// Sampling intervals (SPEC.md, Timing).
@@ -46,6 +58,9 @@ const TIMER_ID: usize = 1;
 /// Focus is sampled every second (SPEC.md, Timing).
 const FOCUS_TIMER_ID: usize = 2;
 const FOCUS_MS: u32 = 1_000;
+/// An eviction in progress is polled four times a second.
+const EVICT_TIMER_ID: usize = 3;
+const EVICT_MS: u32 = 250;
 /// How often the state file is written while running.
 const SAVE_EVERY_MS: u64 = 60_000;
 
@@ -57,11 +72,13 @@ const STYLE: WINDOW_STYLE =
 pub enum Content {
     /// One frame that never changes: `--demo`.
     Still(Frame),
-    /// The PC itself. `state_path` is where `state.json` is saved.
+    /// The PC itself. `state_path` is where `state.json` is saved,
+    /// `settings_path` where the Family list is.
     Live {
         provider: Provider,
         live: Box<Live>,
         state_path: Option<PathBuf>,
+        settings_path: Option<PathBuf>,
     },
 }
 
@@ -72,6 +89,9 @@ struct State {
     interval_ms: u32,
     /// Sample time of the last save.
     saved_at_ms: u64,
+    evictor: Evictor,
+    /// The clock for the polite phase: steady, unlike the sample time.
+    started: Instant,
 }
 
 thread_local! {
@@ -185,6 +205,8 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
             scale: 2,
             interval_ms: SAMPLE_MS,
             saved_at_ms: 0,
+            evictor: Evictor::default(),
+            started: Instant::now(),
         })
     });
     // A first size from the primary monitor; `fit` corrects it once the
@@ -270,6 +292,7 @@ fn tick(hwnd: HWND) {
             provider,
             live,
             state_path,
+            ..
         } = &mut state.content
         else {
             return (false, retime);
@@ -305,6 +328,141 @@ fn tick(hwnd: HWND) {
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
     }
+}
+
+/// What a click or a key asks of the Windows layer, outside the borrow of
+/// the state.
+#[derive(Default)]
+struct After {
+    repaint: bool,
+    /// Whether an eviction now waits on its processes.
+    waiting: bool,
+    startup_settings: bool,
+}
+
+/// Runs `step` on the live building with the evictor and a steady clock,
+/// then copies a changed frame.
+fn with_live(
+    step: impl FnOnce(&mut Live, &mut Evictor, &Option<PathBuf>, u64, &mut After),
+) -> After {
+    STATE.with(|s| {
+        let mut after = After::default();
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return after;
+        };
+        let Some(State {
+            content:
+                Content::Live {
+                    live,
+                    settings_path,
+                    ..
+                },
+            frame,
+            evictor,
+            started,
+            ..
+        }) = s.as_mut()
+        else {
+            return after;
+        };
+        let now_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        step(live, evictor, settings_path, now_ms, &mut after);
+        after.waiting = live.waiting();
+        if !after.waiting {
+            evictor.clear();
+        }
+        if let Some(new) = live.frame()
+            && new != frame
+        {
+            *frame = new.clone();
+            after.repaint = true;
+        }
+        after
+    })
+}
+
+/// A click or a key: the core decides, this carries out its commands.
+fn input(hwnd: HWND, input: Input) {
+    let after = with_live(|live, evictor, settings_path, now_ms, after| {
+        for command in live.input(input, now_ms) {
+            match command {
+                Command::Close { pids } => {
+                    live.report(evictor.close(&pids));
+                }
+                Command::Terminate { pids } => {
+                    if let Some(report) = evictor.terminate(&pids) {
+                        live.report(report);
+                    }
+                }
+                Command::OpenStartupSettings => after.startup_settings = true,
+                Command::SaveFamily(family) => {
+                    if let Some(path) = settings_path {
+                        // A failed save leaves the list in memory for this run.
+                        let _ = crate::store::save_family(path, &family);
+                    }
+                }
+                // The rent roll card and the settings screen come with M5.
+                Command::RentRollCard | Command::Settings => {}
+            }
+        }
+    });
+    finish(hwnd, &after);
+}
+
+/// The eviction timer: which of the processes remain.
+fn poll(hwnd: HWND) {
+    let after = with_live(|live, evictor, _, now_ms, _| {
+        live.poll(&evictor.remaining(), now_ms);
+    });
+    finish(hwnd, &after);
+}
+
+fn finish(hwnd: HWND, after: &After) {
+    // SAFETY: timer and repaint requests on our own window; ShellExecuteW
+    // gets static strings.
+    unsafe {
+        if after.waiting {
+            SetTimer(Some(hwnd), EVICT_TIMER_ID, EVICT_MS, None);
+        } else {
+            let _ = KillTimer(Some(hwnd), EVICT_TIMER_ID);
+        }
+        if after.repaint {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        if after.startup_settings {
+            ShellExecuteW(
+                Some(hwnd),
+                w!("open"),
+                w!("ms-settings:startupapps"),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+}
+
+fn key(code: u16) -> Option<Key> {
+    Some(match VIRTUAL_KEY(code) {
+        VK_UP => Key::Up,
+        VK_DOWN => Key::Down,
+        VK_RETURN => Key::Enter,
+        VK_DELETE => Key::Delete,
+        VK_ESCAPE => Key::Escape,
+        VK_F2 => Key::F2,
+        VK_F3 => Key::F3,
+        _ => return None,
+    })
+}
+
+/// A client-area point in canvas pixels.
+fn canvas_point(lparam: LPARAM) -> Option<(i32, i32)> {
+    // GET_X_LPARAM and GET_Y_LPARAM: signed words.
+    let x = i32::from(lparam.0 as u16 as i16);
+    let y = i32::from((lparam.0 >> 16) as u16 as i16);
+    let scale = STATE.with(|s| s.try_borrow().ok()?.as_ref().map(|state| state.scale))?;
+    let scale = i32::try_from(scale).ok().filter(|&s| s > 0)?;
+    Some((x.div_euclid(scale), y.div_euclid(scale)))
 }
 
 /// Credits focus to the foreground window's process.
@@ -352,10 +510,25 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_TIMER => {
             match wparam.0 {
                 FOCUS_TIMER_ID => focus(),
+                EVICT_TIMER_ID => poll(hwnd),
                 _ => tick(hwnd),
             }
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            if let Some((x, y)) = canvas_point(lparam) {
+                input(hwnd, Input::Click { x, y });
+            }
+            LRESULT(0)
+        }
+        WM_KEYDOWN => match key(wparam.0 as u16) {
+            Some(k) => {
+                input(hwnd, Input::Key(k));
+                LRESULT(0)
+            }
+            // SAFETY: the default handling for other keys.
+            None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        },
         // Moved to a monitor with another DPI: keep the suggested position,
         // pick the scale for that monitor.
         WM_DPICHANGED => {

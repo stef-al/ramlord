@@ -41,7 +41,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
 /// A process handle that closes itself.
-struct Handle(HANDLE);
+pub(super) struct Handle(pub(super) HANDLE);
 
 impl Drop for Handle {
     fn drop(&mut self) {
@@ -358,7 +358,7 @@ fn file_description(path: &str) -> Option<String> {
 
 /// Visible top-level windows: visible, not cloaked, not tool windows and
 /// larger than zero.
-fn is_app_window(hwnd: HWND) -> bool {
+pub(super) fn is_app_window(hwnd: HWND) -> bool {
     // SAFETY: plain queries on a window handle from EnumWindows.
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() {
@@ -385,7 +385,7 @@ fn is_app_window(hwnd: HWND) -> bool {
     }
 }
 
-fn window_pid(hwnd: HWND) -> u32 {
+pub(super) fn window_pid(hwnd: HWND) -> u32 {
     let mut pid = 0u32;
     // SAFETY: writes one u32.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
@@ -401,7 +401,7 @@ extern "system" fn collect(hwnd: HWND, list: LPARAM) -> BOOL {
 }
 
 /// Top-level windows, or the children of `parent`.
-fn windows_of(parent: Option<HWND>) -> Vec<HWND> {
+pub(super) fn windows_of(parent: Option<HWND>) -> Vec<HWND> {
     let mut list: Vec<HWND> = Vec::new();
     let param = LPARAM(&raw mut list as isize);
     // SAFETY: `collect` only pushes into `list`, which outlives the call.

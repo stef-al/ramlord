@@ -4,8 +4,10 @@
 //!
 //! - `provider` builds a Snapshot.
 //! - `shell` is the window: whole-number scaling, the 2 second sampling
-//!   loop, redraws only when the scene changes.
+//!   loop, redraws only when the scene changes, clicks and keys.
+//! - `evict` closes and, when asked, terminates a tenant's processes.
 
+pub mod evict;
 pub mod provider;
 pub mod shell;
 
