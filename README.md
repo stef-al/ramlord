@@ -10,10 +10,10 @@ account, sends no telemetry and asks for no admin rights.
 ![The sample building](fixtures/golden/sample-tower.png)
 
 **Status:** early development. On Windows, `ramlord` shows your real apps
-in the tower, updating every 2 seconds; `ramlord --demo` shows a sample
-building. Flags, the landlord's remarks, eviction, prices for your memory
-type, settings and the tray come next. See [SPEC.md](SPEC.md) for the full
-design and the milestones.
+in the tower, updating every 2 seconds, tags the ones you forgot (AWAY,
+WALLS, SQUAT, LEAK) and has the landlord say something about it. Eviction,
+prices for your memory type, settings and the tray come next. See
+[SPEC.md](SPEC.md) for the full design and the milestones.
 
 ## Build
 

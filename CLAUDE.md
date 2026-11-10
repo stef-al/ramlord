@@ -11,7 +11,8 @@ look; where it disagrees with `SPEC.md`, `SPEC.md` wins. Never build from
 ```text
 crates/core/   ramlord-core: logic and drawing, pure (no OS calls)
 crates/app/    ramlord: the exe; all Windows code under src/win/
-fixtures/      buildings and snapshots as JSON; fixtures/golden/ holds the expected PNGs
+fixtures/      buildings and snapshots as JSON; timelines/ for flags over time;
+               golden/ holds the expected PNGs
 rules/         windows.toml: how processes become tenants, built into the exe
 prices.json    price per GB by memory type (used from M5)
 scripts/       wine-run.sh and wine-demo.sh: rung 4
@@ -42,7 +43,18 @@ cargo run -p ramlord -- --snapshot fixtures/snapshot-desk.json --render desk.png
 When a rendering change is intended, regenerate the golden images with the
 same commands into `fixtures/golden/` (`sample-tower.png`,
 `sample-rent-roll.png`, `snapshot-desk-tower.png`), look at them, and say in
-the commit what changed and why.
+the commit what changed and why. `timeline-full-tower.png` is the last frame
+of `fixtures/timelines/full.json`; write it, and a frame at every checkpoint
+of every timeline, with:
+
+```bash
+RAMLORD_PNG_DIR=/some/dir cargo test -p ramlord-core --test flags
+```
+
+Timelines (`fixtures/timelines/*.json`, format in
+`crates/core/tests/timeline/mod.rs`) describe hours of samples, sleeps and
+the flags expected after each step. Each flag's timeline has a sleep placed
+so the test fails if a gap ever counts as watched time.
 
 Check a live dump from Windows (CI does this on the Windows runner):
 
@@ -80,7 +92,10 @@ mode not available on this platform, 6 when the window fails and 7 when
 - `gh pr` and `gh issue` do not work in cloud sessions; the owner creates pull
   requests. Do not start a milestone that was not asked for.
 - Until M5, a live building's price line says `RAM` at the DDR5 price
-  (`Lease::placeholder`); until M3 it has no remark and no flags.
+  (`Lease::placeholder`), and the Family list is empty.
+- The live app keeps `state.json` in `%APPDATA%\RAMlord\` (hues, watched
+  time, flags' counters). `--dump`, `--snapshot` and `--self-test` never
+  read or write it.
 
 ## The six verification rungs
 
