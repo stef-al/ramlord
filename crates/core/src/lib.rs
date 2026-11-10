@@ -57,3 +57,14 @@ pub fn render_card(building: &Building, saved_hues: &HueBook) -> Frame {
     let draws = scene::card(building, &layout);
     render::rasterize(scene::CARD_WIDTH, scene::CARD_HEIGHT, palette::SKY, &draws)
 }
+
+/// Draws the tray icon, 16 by 16 (see `scene::tray_icon`).
+pub fn render_tray_icon(occupancy_percent: u64, full: bool) -> Frame {
+    let draws = scene::tray_icon(occupancy_percent, full);
+    render::rasterize(
+        scene::TRAY_SIZE,
+        scene::TRAY_SIZE,
+        palette::TRAY_CLEAR,
+        &draws,
+    )
+}

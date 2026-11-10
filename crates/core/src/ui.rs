@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::building::{Building, Flag};
 use crate::format::{cut, wrap_balanced};
 use crate::remarks::evicted_text;
+use crate::settings::{ROWS, Row, Settings};
 
 /// How long the polite phase waits for the processes to exit.
 pub const POLITE_MS: u64 = 5_000;
@@ -34,6 +35,7 @@ pub enum Key {
     Escape,
     F2,
     F3,
+    Backspace,
 }
 
 /// Something the user clicked: a region of the window.
@@ -46,6 +48,8 @@ pub enum Target {
     RentRollCard,
     /// The `F3 SETTINGS` hint.
     Settings,
+    /// A row of the settings screen, by its place in `settings::ROWS`.
+    Setting(u8),
     /// Staff's units or its rent roll row: the Staff card.
     Staff,
     /// Others' units or its rent roll row: the Others card.
@@ -91,6 +95,8 @@ pub enum Input {
         y: i32,
     },
     Key(Key),
+    /// A typed character, for the custom price.
+    Char(char),
 }
 
 /// What the Windows layer is asked to do.
@@ -103,12 +109,17 @@ pub enum Command {
     Terminate { pids: Vec<u32> },
     /// Launch `ms-settings:startupapps`.
     OpenStartupSettings,
-    /// F2: the rent roll card (M5).
+    /// F2: save the rent roll card and copy it to the clipboard.
     RentRollCard,
-    /// F3: settings (M5).
-    Settings,
-    /// The Family list changed: save it.
+    /// The Family list changed. `Live` turns it into `ApplySettings`.
     SaveFamily(BTreeSet<String>),
+    /// Enter on a settings row. `Live` turns it into `ApplySettings`.
+    Setting(Row),
+    /// A typed price, to read. `Live` turns it into `ApplySettings`.
+    Price(String),
+    /// The settings changed: save them and apply what is the Windows
+    /// layer's (scale, on top, start with Windows, price fetching).
+    ApplySettings(Settings),
 }
 
 /// What the Windows layer reports back during an eviction.
@@ -226,6 +237,8 @@ pub enum View {
     Staff,
     /// The Others card: everyone the rent roll does not list.
     Others,
+    /// The settings screen (F3).
+    Settings,
 }
 
 /// What the state machine needs to know about the moment.
@@ -251,7 +264,14 @@ pub struct Ui {
     /// Where the details card goes back to: the rent roll, or the Others
     /// card it was opened from.
     pub back_to: View,
+    /// The selected row of the settings screen.
+    pub settings_at: usize,
+    /// The price being typed, while it is.
+    pub editing: Option<String>,
 }
+
+/// The most characters a typed price may have.
+const PRICE_CHARS: usize = 12;
 
 /// Rows on one page of the Others card.
 pub const OTHERS_PAGE: usize = 13;
@@ -264,6 +284,8 @@ impl Ui {
             eviction: Eviction::Idle,
             family,
             back_to: View::Roll,
+            settings_at: 0,
+            editing: None,
         }
     }
 
@@ -388,10 +410,79 @@ impl Ui {
         }
     }
 
+    /// The settings screen's keys and clicks. None: not for it (a click on
+    /// the tower, say), handled as anywhere else.
+    fn settings_input(&mut self, input: Input, cx: &Context) -> Option<Vec<Command>> {
+        if let Some(text) = &mut self.editing {
+            match input {
+                Input::Char(c) if !c.is_control() && text.chars().count() < PRICE_CHARS => {
+                    text.push(c);
+                }
+                Input::Key(Key::Backspace) => {
+                    text.pop();
+                }
+                Input::Key(Key::Enter) => {
+                    let text = self.editing.take().unwrap_or_default();
+                    return Some(vec![Command::Price(text)]);
+                }
+                Input::Key(Key::Escape) => self.editing = None,
+                Input::Click { .. } => {
+                    // A click elsewhere ends the typing, unsaved.
+                    self.editing = None;
+                    return None;
+                }
+                _ => {}
+            }
+            return Some(Vec::new());
+        }
+        let last = ROWS.len() - 1;
+        let enter = |ui: &mut Ui, at: usize| -> Vec<Command> {
+            ui.settings_at = at;
+            match ROWS[at] {
+                Row::Price => {
+                    ui.editing = Some(String::new());
+                    Vec::new()
+                }
+                row => vec![Command::Setting(row)],
+            }
+        };
+        Some(match input {
+            Input::Key(Key::Up) => {
+                self.settings_at = self.settings_at.saturating_sub(1);
+                Vec::new()
+            }
+            Input::Key(Key::Down) => {
+                self.settings_at = (self.settings_at + 1).min(last);
+                Vec::new()
+            }
+            Input::Key(Key::Enter) => enter(self, self.settings_at),
+            Input::Key(Key::Escape | Key::F3) => {
+                self.view = View::Roll;
+                Vec::new()
+            }
+            Input::Key(Key::F2) => vec![Command::RentRollCard],
+            Input::Click { x, y } => match hit(cx.regions, x, y) {
+                Some(Target::Setting(at)) => enter(self, usize::from(at).min(last)),
+                Some(Target::Back) => {
+                    self.view = View::Roll;
+                    Vec::new()
+                }
+                _ => return None,
+            },
+            _ => Vec::new(),
+        })
+    }
+
     /// Handles a click or a key.
     pub fn input(&mut self, input: Input, cx: &Context) -> Vec<Command> {
-        let selected = self.selected_index(cx.building);
         // An open dialog takes every input.
+        if self.eviction == Eviction::Idle
+            && self.view == View::Settings
+            && let Some(commands) = self.settings_input(input, cx)
+        {
+            return commands;
+        }
+        let selected = self.selected_index(cx.building);
         if self.eviction != Eviction::Idle {
             let buttons = self.eviction.buttons();
             let button = match input {
@@ -403,7 +494,7 @@ impl Ui {
                     .copied()
                     .find(|t| matches!(t, Target::Cancel | Target::Leave | Target::Ok)),
                 Input::Key(Key::Delete) if buttons.contains(&Target::Force) => Some(Target::Force),
-                Input::Key(_) => None,
+                Input::Key(_) | Input::Char(_) => None,
             };
             return match button {
                 Some(button) => self.answer(cx, button),
@@ -445,7 +536,10 @@ impl Ui {
                     Vec::new()
                 }
                 Some(Target::RentRollCard) => vec![Command::RentRollCard],
-                Some(Target::Settings) => vec![Command::Settings],
+                Some(Target::Settings) => {
+                    self.view = View::Settings;
+                    Vec::new()
+                }
                 Some(Target::Back) => {
                     self.view = match self.view {
                         View::Details => self.back_to,
@@ -514,8 +608,13 @@ impl Ui {
                     Vec::new()
                 }
                 Key::F2 => vec![Command::RentRollCard],
-                Key::F3 => vec![Command::Settings],
+                Key::F3 => {
+                    self.view = View::Settings;
+                    Vec::new()
+                }
+                Key::Backspace => Vec::new(),
             },
+            Input::Char(_) => Vec::new(),
         }
     }
 
@@ -753,7 +852,8 @@ mod tests {
         key(&mut ui, &w, Key::Escape);
         assert_eq!(ui.selected, None);
         assert_eq!(key(&mut ui, &w, Key::F2), [Command::RentRollCard]);
-        assert_eq!(key(&mut ui, &w, Key::F3), [Command::Settings]);
+        assert!(key(&mut ui, &w, Key::F3).is_empty());
+        assert_eq!(ui.view, View::Settings);
     }
 
     #[test]

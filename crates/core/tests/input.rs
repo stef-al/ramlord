@@ -319,7 +319,7 @@ fn family_is_saved_and_cannot_be_evicted() {
         },
         now,
     );
-    assert!(matches!(&commands[..], [Command::SaveFamily(f)] if f.len() == 1));
+    assert!(matches!(&commands[..], [Command::ApplySettings(s)] if s.family.len() == 1));
     assert!(live.input(Input::Key(Key::Delete), now).is_empty());
     assert_eq!(live.ui().eviction, Eviction::Idle);
     // From the next sample on, the tenant carries the Family flag.

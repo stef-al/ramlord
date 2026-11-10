@@ -43,6 +43,12 @@ pub const FRAME_DARK: Rgb = 0x7d5f28;
 pub const CANVAS: Rgb = 0xd9d3c3;
 pub const CANVAS_INK: Rgb = 0x7c7f99;
 
+// The tray icon (M5).
+/// Pixels of this color are transparent in the tray icon.
+pub const TRAY_CLEAR: Rgb = 0xff00ff;
+pub const TRAY_WALL: Rgb = 0x8a8fa8;
+pub const TRAY_FULL: Rgb = 0xd94444;
+
 /// The Staff card's parts, in `StaffParts::rows` order: services, kernel
 /// pools, drivers, file cache, to disk, hardware, shared and other.
 pub const STAFF_PARTS: [Rgb; 7] = [

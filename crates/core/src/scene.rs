@@ -86,14 +86,20 @@ pub struct Roll {
 }
 
 impl Roll {
+    /// The rent roll as the panel shows it: for each line below the total
+    /// (BOXES, GALLERY), one tenant row less fits.
     pub fn new(building: &Building, layout: &Layout) -> Roll {
-        let price = building.price.per_gb_micros;
-        let rent = |bytes| Shown::rent(micros(bytes, price));
-        // For each line below (BOXES, GALLERY), one tenant row less fits
-        // the panel.
         let listed = ROLL_ROWS
             - usize::from(building.boxes_bytes > 0)
             - usize::from(building.gallery_bytes > 0);
+        Roll::listing(building, layout, listed)
+    }
+
+    /// The rent roll listing at most `listed` tenants by name: the card
+    /// always has room for ten.
+    pub fn listing(building: &Building, layout: &Layout, listed: usize) -> Roll {
+        let price = building.price.per_gb_micros;
+        let rent = |bytes| Shown::rent(micros(bytes, price));
         let rows: Vec<RollRow> = layout
             .named
             .iter()
@@ -219,6 +225,8 @@ pub enum Panel<'a> {
     Staff,
     /// Everyone the rent roll does not list.
     Others,
+    /// The settings screen.
+    Settings(&'a SettingsView),
 }
 
 /// The whole window: the building, the selected tenant outlined in white,
@@ -288,6 +296,7 @@ pub fn window(
         Panel::Dialog(eviction) => dialog_panel(&mut d, &mut regions, eviction),
         Panel::Staff => staff_panel(&mut d, &mut regions, building, layout),
         Panel::Others => others_panel(&mut d, &mut regions, building, layout, selected),
+        Panel::Settings(view) => settings_panel(&mut d, &mut regions, view),
     }
     (d, regions)
 }
@@ -630,8 +639,9 @@ fn rent_roll_panel(
         lx0 + 5,
         26,
         format!(
-            "{} {}/GB  {} {}",
+            "{} {}{}/GB  {} {}",
             building.memory_type,
+            if building.price.estimated { "~" } else { "" },
             price_text(building.price.per_gb_micros, symbol),
             as_of.month_name(),
             as_of.day
@@ -1338,6 +1348,100 @@ fn others_panel(
     );
 }
 
+/// What the settings screen shows: each row's label and value, the
+/// selected row, the price being typed and the selected row's help.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SettingsView {
+    pub rows: Vec<(String, String)>,
+    pub at: usize,
+    pub editing: Option<String>,
+    pub help: [String; 2],
+}
+
+/// The settings screen (SPEC.md, Settings and state), in the rent roll's
+/// panel: Up and Down move, Enter or a click changes the selected row, and
+/// the price is typed in.
+fn settings_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, view: &SettingsView) {
+    let (lx0, lx1) = panel_frame(d);
+    d.push(Draw::text(lx0 + 5, 15, "SETTINGS", GOLD));
+    d.push(Draw::rect(lx0 + 4, 25, lx1 - 4, 25, PANEL_LINE));
+    let mut y = 30;
+    for (k, (label, value)) in view.rows.iter().enumerate() {
+        if k == view.at {
+            d.push(Draw::rect(lx0 + 2, y - 2, lx1 - 2, y + 7, PANEL_LINE));
+        }
+        regions.push(Region {
+            x0: lx0 + 1,
+            y0: y - 2,
+            x1: lx1 - 1,
+            y1: y + 7,
+            target: Target::Setting(k as u8),
+        });
+        d.push(Draw::text(lx0 + 5, y, label.clone(), TEXT_DIM));
+        match (&view.editing, k == view.at) {
+            (Some(text), true) => {
+                d.push(Draw::text_right(lx1 - 5, y, format!("{text}_"), GOLD, 1));
+            }
+            _ => d.push(Draw::text_right(lx1 - 5, y, value.clone(), TEXT, 1)),
+        }
+        y += 10;
+    }
+    d.push(Draw::rect(lx0 + 4, 132, lx1 - 4, 132, PANEL_LINE));
+    for (k, line) in view.help.iter().enumerate() {
+        d.push(Draw::text(
+            lx0 + 5,
+            136 + 9 * k as i32,
+            line.clone(),
+            TEXT_DIM,
+        ));
+    }
+    let keys = if view.editing.is_some() {
+        "TYPE, ENTER OK, ESC UNDO"
+    } else {
+        "ENTER CHANGES, ESC BACK"
+    };
+    d.push(Draw::text(lx0 + 5, 172, keys, TEXT_DIM));
+    button(
+        d,
+        regions,
+        (lx0 + 79, lx1 - 5),
+        198,
+        "BACK",
+        TEXT,
+        Some(Target::Back),
+    );
+}
+
+/// The tray icon's size in pixels.
+pub const TRAY_SIZE: u32 = 16;
+
+/// The tray icon: a small tower whose windows light up from the ground
+/// floor with occupancy, red when the building is full (SPEC.md, Window
+/// and tray). Drawn over `palette::TRAY_CLEAR`, which the Windows layer
+/// makes transparent.
+pub fn tray_icon(occupancy_percent: u64, full: bool) -> Vec<Draw> {
+    let wall = if full { TRAY_FULL } else { TRAY_WALL };
+    let mut d = vec![
+        // Antenna with its light, roof, walls with a dark outline.
+        Draw::rect(11, 0, 11, 2, OUTLINE),
+        Draw::dot(11, 0, ALERT),
+        Draw::rect(2, 2, 13, 15, OUTLINE),
+        Draw::rect(3, 3, 12, 14, wall),
+        Draw::rect(3, 3, 12, 3, ROOF_EDGE),
+    ];
+    // Twelve windows, three across and four floors up, lit from the
+    // ground floor in reading order.
+    let lit = ((occupancy_percent.min(100) * 12 + 50) / 100) as usize;
+    for k in 0..12 {
+        let (floor, col) = (k / 3, k % 3);
+        let x = 4 + 3 * col as i32;
+        let y = 12 - 3 * floor as i32;
+        let color = if k < lit { GOLD } else { DARK_WINDOW };
+        d.push(Draw::rect(x, y, x + 1, y + 1, color));
+    }
+    d
+}
+
 /// The eviction dialog, in the rent roll's panel.
 fn dialog_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, eviction: &Eviction) {
     let (lx0, lx1) = panel_frame(d);
@@ -1399,13 +1503,19 @@ impl Line {
 /// The rent roll card: a paper receipt on the night sky, 240 by 300, painted
 /// over a `SKY` background.
 pub fn card(building: &Building, layout: &Layout) -> Vec<Draw> {
+    card_with(building, layout, false)
+}
+
+/// The rent roll card; `anonymous` names the tenants TENANT 1 to n
+/// (SPEC.md, The rent roll card: privacy).
+pub fn card_with(building: &Building, layout: &Layout, anonymous: bool) -> Vec<Draw> {
     let symbol = building.price.symbol.as_str();
     let estimate = building.rent_is_estimate;
     // The card's rent column holds five characters.
     let column = |amount: Shown, estimate: bool| amount.fit(symbol, estimate, Some(5));
     let (x0, x1) = (22, 217);
     let date = building.reading_date();
-    let roll = Roll::new(building, layout);
+    let roll = Roll::listing(building, layout, ROLL_ROWS);
     let size = |bytes| format!("{} GB", gb_text(bytes));
 
     let mut lines = vec![
@@ -1419,16 +1529,25 @@ pub fn card(building: &Building, layout: &Layout) -> Vec<Draw> {
             date.year
         )),
         Line::Center(format!(
-            "{} GB {} AT {}/GB",
+            "{} GB {} AT {}/GB{}",
             whole_gb(building.capacity_bytes),
             building.memory_type,
-            price_text(building.price.per_gb_micros, symbol)
+            price_text(building.price.per_gb_micros, symbol),
+            if building.price.estimated {
+                " EST."
+            } else {
+                ""
+            }
         )),
         Line::Rule,
     ];
-    for row in &roll.rows {
+    for (k, row) in roll.rows.iter().enumerate() {
         lines.push(Line::Row {
-            name: row.name.clone(),
+            name: if anonymous {
+                format!("TENANT {}", k + 1)
+            } else {
+                row.name.clone()
+            },
             tag: row.tag,
             size: size(row.bytes),
             rent: column(row.rent, estimate),

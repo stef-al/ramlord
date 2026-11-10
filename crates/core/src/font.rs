@@ -15,7 +15,7 @@ pub const MIDDLE_DOT: char = '|';
 
 pub type Glyph = [u8; 7];
 
-const GLYPHS: [(char, Glyph); 57] = [
+const GLYPHS: [(char, Glyph); 60] = [
     (
         'A',
         [
@@ -358,6 +358,25 @@ const GLYPHS: [(char, Glyph); 57] = [
             0b00000, 0b00000, 0b01000, 0b10101, 0b00010, 0b00000, 0b00000,
         ],
     ), // marks an estimate
+    // Currency symbols a custom price may use (M5).
+    (
+        '\u{20ac}',
+        [
+            0b00111, 0b01000, 0b11110, 0b01000, 0b11110, 0b01000, 0b00111,
+        ],
+    ), // euro
+    (
+        '\u{a3}',
+        [
+            0b00110, 0b01001, 0b01000, 0b11110, 0b01000, 0b01000, 0b11111,
+        ],
+    ), // pound
+    (
+        '\u{a5}',
+        [
+            0b10001, 0b01010, 0b00100, 0b11111, 0b00100, 0b11111, 0b00100,
+        ],
+    ), // yen
 ];
 
 /// The glyph for `c`. Lower case is drawn as upper case; a typographic
@@ -455,8 +474,12 @@ mod tests {
     fn lower_case_and_unknown_characters() {
         assert_eq!(glyph('a'), glyph('A'));
         assert_eq!(glyph('\u{2019}'), glyph('\''));
-        assert_eq!(glyph('€'), glyph('?'));
+        assert_eq!(glyph('¤'), glyph('?'));
         assert_eq!(glyph('#'), glyph('?'));
+        // Currency symbols a custom price may use have their own.
+        for c in ['€', '£', '¥'] {
+            assert_ne!(glyph(c), glyph('?'), "{c}");
+        }
     }
 
     #[test]

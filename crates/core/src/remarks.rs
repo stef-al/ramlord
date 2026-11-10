@@ -29,9 +29,10 @@ pub const NOT_HOME_MIN_BYTES: u64 = 500 * MIB;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
-    /// The report of an eviction the user asked for. It answers the user,
-    /// so it is shown at once, then held 20 seconds like any other line.
-    Evicted = 0,
+    /// A reply to the user: an eviction's report, the card saved, a
+    /// question. It answers the user, so it is shown at once, then held 20
+    /// seconds like any other line.
+    Notice = 0,
     Full = 1,
     Leak = 2,
     Squatters = 3,
@@ -62,8 +63,8 @@ pub struct Sample<'a> {
     pub commit_limit_bytes: u64,
     pub signed_in_at_ms: u64,
     pub gained: &'a [Gained],
-    /// An eviction finished in this sample: its report.
-    pub evicted: Option<&'a str>,
+    /// A reply to the user to show now: an eviction's report and such.
+    pub notice: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -310,10 +311,10 @@ impl Remarks {
                 _ => false,
             });
 
-        if let Some(text) = sample.evicted {
+        if let Some(text) = sample.notice {
             self.current = Some(Showing {
                 remark: Remark {
-                    kind: Kind::Evicted,
+                    kind: Kind::Notice,
                     text: text.to_owned(),
                     tenant: None,
                 },
@@ -394,7 +395,7 @@ mod tests {
             commit_limit_bytes: 32 * GIB,
             signed_in_at_ms: 1_000,
             gained,
-            evicted: None,
+            notice: None,
         }
     }
 
@@ -601,25 +602,25 @@ mod tests {
         // report answers at once.
         let report = sample(5_000, &[]);
         let report = Sample {
-            evicted: Some("Evicted A. 4.0 GB vacated."),
+            notice: Some("Evicted A. 4.0 GB vacated."),
             ..report
         };
         let remark = r.update(&b, &report, &mut told);
-        assert_eq!(remark.kind, Kind::Evicted);
+        assert_eq!(remark.kind, Kind::Notice);
         assert_eq!(remark.text, "Evicted A. 4.0 GB vacated.");
         // Even a full building waits until the report has had 20 seconds.
         let full = building(100);
         for at in [6_000, 24_999] {
             assert_eq!(
                 r.update(&full, &sample(at, &[]), &mut told).kind,
-                Kind::Evicted
+                Kind::Notice
             );
         }
         // From then on, the lines go on as before. A full building takes
         // 20 seconds of its own before it is called full.
         assert_ne!(
             r.update(&full, &sample(25_000, &[]), &mut told).kind,
-            Kind::Evicted
+            Kind::Notice
         );
     }
 
