@@ -109,6 +109,16 @@ impl Live {
         &self.settings
     }
 
+    /// The price table bills are made from.
+    pub fn prices(&self) -> &PriceTable {
+        &self.prices
+    }
+
+    /// Notes when prices were last fetched or tried, to try once a day.
+    pub fn mark_prices_checked(&mut self, at_ms: u64) {
+        self.settings.price_checked_ms = at_ms;
+    }
+
     /// The lease, Family and AWAY threshold from the settings; the drawn
     /// building is billed anew at once.
     fn apply_settings(&mut self) {

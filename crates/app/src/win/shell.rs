@@ -14,13 +14,16 @@
 //! list. While an eviction waits, a timer polls the processes four times
 //! a second.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ramlord_core::Frame;
 use ramlord_core::live::Live;
 use ramlord_core::render::pick_scale;
+use ramlord_core::scene::CARD_PNG_SCALE;
+use ramlord_core::settings::Settings;
 use ramlord_core::ui::{Command, Input, Key};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -35,7 +38,7 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VIRTUAL_KEY, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_F2, VK_F3, VK_RETURN, VK_UP,
+    VIRTUAL_KEY, VK_BACK, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_F2, VK_F3, VK_RETURN, VK_UP,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -49,7 +52,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::w;
 
 use super::evict::Evictor;
+use super::extras;
+use super::instance::{CLASS, WM_SHOW_FIRST};
 use super::provider::Provider;
+use super::tray::{self, Tray, WM_TRAY};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DestroyWindow, HWND_NOTOPMOST, HWND_TOPMOST, IsWindowVisible, RegisterWindowMessageW, SW_HIDE,
+    SW_RESTORE, SWP_NOSIZE, SetForegroundWindow, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONUP,
+    WM_RBUTTONUP,
+};
 
 /// Sampling intervals (SPEC.md, Timing).
 const SAMPLE_MS: u32 = 2_000;
@@ -73,12 +84,14 @@ pub enum Content {
     /// One frame that never changes: `--demo`.
     Still(Frame),
     /// The PC itself. `state_path` is where `state.json` is saved,
-    /// `settings_path` where the Family list is.
+    /// `settings_path` where the settings are, `cache_path` where a fetched
+    /// price file is kept.
     Live {
         provider: Box<Provider>,
         live: Box<Live>,
         state_path: Option<PathBuf>,
         settings_path: Option<PathBuf>,
+        cache_path: Option<PathBuf>,
     },
 }
 
@@ -92,10 +105,24 @@ struct State {
     evictor: Evictor,
     /// The clock for the polite phase: steady, unlike the sample time.
     started: Instant,
+    /// The tray icon, for a live window.
+    tray: Option<Tray>,
+    /// A price fetch on its own thread, while it runs.
+    fetching: Option<Receiver<Result<String, String>>>,
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    /// Explorer's "TaskbarCreated" message: the tray icon must come back.
+    static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
+}
+
+/// UTC milliseconds, for the once-a-day price fetch.
+fn now_utc_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn work_area(monitor: HMONITOR) -> (u32, u32) {
@@ -153,7 +180,15 @@ fn rescale(monitor: HMONITOR) -> (i32, i32) {
         let Some(state) = s.as_mut() else {
             return (0, 0);
         };
-        state.scale = pick_scale(state.frame.width, state.frame.height, work_w, work_h);
+        // A scale chosen in settings wins; otherwise the largest that fits.
+        let chosen = match &state.content {
+            Content::Live { live, .. } => live.settings().scale,
+            Content::Still(_) => None,
+        };
+        state.scale = chosen.map_or_else(
+            || pick_scale(state.frame.width, state.frame.height, work_w, work_h),
+            |n| n.clamp(2, 5),
+        );
         (
             (state.frame.width * state.scale) as i32,
             (state.frame.height * state.scale) as i32,
@@ -207,6 +242,8 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
             saved_at_ms: 0,
             evictor: Evictor::default(),
             started: Instant::now(),
+            tray: None,
+            fetching: None,
         })
     });
     // A first size from the primary monitor; `fit` corrects it once the
@@ -216,7 +253,7 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
     let (cw, ch) = rescale(primary);
     let (w, h) = window_size(None, cw, ch);
 
-    let class = w!("RAMlordWindow");
+    let class = CLASS;
     // SAFETY: standard Win32 window creation and message loop on this
     // thread. Every pointer passed points to a live local for the call.
     unsafe {
@@ -247,18 +284,35 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
         )
         .map_err(|e| format!("CreateWindowExW: {e}"))?;
         fit(hwnd);
+        // A live window has a tray icon. Minimized, it starts hidden there,
+        // unless the icon could not be added.
+        let mut in_tray = false;
+        if live {
+            TASKBAR_CREATED.set(RegisterWindowMessageW(w!("TaskbarCreated")));
+            STATE.with(|s| {
+                if let Some(state) = s.borrow_mut().as_mut() {
+                    state.tray = Some(Tray::new(hwnd));
+                }
+            });
+            refresh_tray();
+            in_tray = tray_added();
+        }
         let _ = ShowWindow(
             hwnd,
-            if minimized {
-                SW_SHOWMINNOACTIVE
-            } else {
-                SW_SHOW
+            match (minimized, in_tray) {
+                (true, true) => SW_HIDE,
+                (true, false) => SW_SHOWMINNOACTIVE,
+                (false, _) => SW_SHOW,
             },
         );
         let _ = UpdateWindow(hwnd);
         if live {
             SetTimer(Some(hwnd), TIMER_ID, SAMPLE_MS, None);
             SetTimer(Some(hwnd), FOCUS_TIMER_ID, FOCUS_MS, None);
+            if let Some(settings) = live_settings() {
+                set_on_top(hwnd, settings.always_on_top);
+            }
+            start_fetch();
         }
 
         let mut msg = MSG::default();
@@ -278,8 +332,8 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
 
 /// One sample: draw it, and repaint only if the frame changed.
 fn tick(hwnd: HWND) {
-    // SAFETY: plain query on our window.
-    let hidden = unsafe { IsIconic(hwnd) }.as_bool();
+    // SAFETY: plain queries on our window.
+    let hidden = unsafe { !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() };
     let want = if hidden { SAMPLE_HIDDEN_MS } else { SAMPLE_MS };
     let (changed, retime) = STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -328,6 +382,208 @@ fn tick(hwnd: HWND) {
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
     }
+    refresh_tray();
+    check_fetch(hwnd);
+}
+
+/// The live building's settings, if the window is live.
+fn live_settings() -> Option<Settings> {
+    STATE.with(|s| {
+        let s = s.try_borrow().ok()?;
+        match &s.as_ref()?.content {
+            Content::Live { live, .. } => Some(live.settings().clone()),
+            Content::Still(_) => None,
+        }
+    })
+}
+
+fn tray_added() -> bool {
+    STATE.with(|s| {
+        s.try_borrow()
+            .ok()
+            .and_then(|s| {
+                s.as_ref()
+                    .and_then(|state| state.tray.as_ref().map(Tray::added))
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Brings the tray icon in step with the building.
+fn refresh_tray() {
+    STATE.with(|s| {
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return;
+        };
+        let Some(State {
+            content: Content::Live { live, .. },
+            tray: Some(tray),
+            ..
+        }) = s.as_mut()
+        else {
+            return;
+        };
+        if let Some((occupancy, full)) = live.tray() {
+            tray.update(occupancy, full);
+        }
+    });
+}
+
+/// Starts fetching the price file on a thread of its own, when one is due.
+fn start_fetch() {
+    STATE.with(|s| {
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = s.as_mut() else { return };
+        let Content::Live { live, .. } = &state.content else {
+            return;
+        };
+        if state.fetching.is_some() || !crate::pricing::due(live.settings(), now_utc_ms()) {
+            return;
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(extras::fetch(crate::pricing::HOST, crate::pricing::PATH));
+        });
+        state.fetching = Some(receive);
+    });
+}
+
+/// Takes a finished fetch: a newer valid file is billed at once and kept;
+/// anything else leaves the prices as they were. Either way, the next try
+/// is a day later.
+fn check_fetch(hwnd: HWND) {
+    let changed = STATE.with(|s| {
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return false;
+        };
+        let Some(state) = s.as_mut() else {
+            return false;
+        };
+        let Some(receive) = &state.fetching else {
+            return false;
+        };
+        let result = match receive.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => Err("the fetch stopped".into()),
+        };
+        state.fetching = None;
+        let Content::Live {
+            live,
+            settings_path,
+            cache_path,
+            ..
+        } = &mut state.content
+        else {
+            return false;
+        };
+        let (table, cache) = crate::pricing::after_fetch(live.prices(), result);
+        if let (Some(text), Some(path)) = (cache, cache_path.as_deref()) {
+            let _ = crate::store::write_text(path, &text);
+        }
+        live.mark_prices_checked(now_utc_ms());
+        if let Some(path) = settings_path {
+            let _ = crate::store::save_settings(path, live.settings());
+        }
+        let changed = live.set_prices(table);
+        if changed && let Some(frame) = live.frame() {
+            state.frame = frame.clone();
+        }
+        changed
+    });
+    if changed {
+        // SAFETY: a repaint request on our own window.
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+}
+
+fn set_on_top(hwnd: HWND, on: bool) {
+    // SAFETY: changes our own window's z-order only.
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(if on { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// Shows the window from the tray or a second start, in front.
+fn show_window(hwnd: HWND) {
+    // SAFETY: plain calls on our own window.
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+/// Puts the settings into effect: saved already by `input`, this applies
+/// what is Windows' to apply.
+fn apply(hwnd: HWND, settings: &Settings) {
+    set_on_top(hwnd, settings.always_on_top);
+    fit(hwnd);
+    if settings.start_with_windows != extras::autostart()
+        && let Err(e) = extras::set_autostart(settings.start_with_windows)
+    {
+        let _ = with_live(|live, _, _, _, _| {
+            live.notice(
+                format!("Start with Windows failed: {e}")
+                    .chars()
+                    .take(60)
+                    .collect::<String>(),
+            )
+        });
+    }
+    start_fetch();
+}
+
+/// F2: the rent roll card as a PNG in Pictures\RAMlord, and on the
+/// clipboard. The landlord says how it went.
+fn save_card(hwnd: HWND) {
+    let card = STATE.with(|s| {
+        let s = s.try_borrow().ok()?;
+        match &s.as_ref()?.content {
+            Content::Live { live, .. } => live.card(),
+            Content::Still(_) => None,
+        }
+    });
+    let Some(card) = card else { return };
+    let message = match write_card(hwnd, &card) {
+        Ok(()) => "Rent roll saved to Pictures and copied.".to_string(),
+        Err(e) => format!("No rent roll: {e}").chars().take(60).collect(),
+    };
+    let _ = with_live(|live, _, _, _, _| live.notice(message));
+}
+
+fn write_card(hwnd: HWND, card: &ramlord_core::Frame) -> Result<(), String> {
+    let pictures = extras::pictures()
+        .or_else(|| std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("Pictures")))
+        .ok_or("no Pictures folder")?;
+    let dir = pictures.join("RAMlord");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let (year, month, day, hour, minute, second) = extras::local_time();
+    let path = dir.join(crate::pricing::card_file_name(
+        year, month, day, hour, minute, second,
+    ));
+    crate::output::write_png(&path, card, CARD_PNG_SCALE)?;
+    extras::copy_image(hwnd, &card.scaled(CARD_PNG_SCALE))
+}
+
+/// Whether the close button hides the window to the tray: a live window
+/// with its icon in place, unless the settings say it quits.
+fn close_hides() -> bool {
+    tray_added() && live_settings().is_some_and(|s| !s.close_quits)
 }
 
 /// What a click or a key asks of the Windows layer, outside the borrow of
@@ -338,6 +594,10 @@ struct After {
     /// Whether an eviction now waits on its processes.
     waiting: bool,
     startup_settings: bool,
+    /// F2: save and copy the card.
+    card: bool,
+    /// Settings to put into effect.
+    apply: Option<Settings>,
 }
 
 /// Runs `step` on the live building with the evictor and a steady clock,
@@ -395,14 +655,17 @@ fn input(hwnd: HWND, input: Input) {
                     }
                 }
                 Command::OpenStartupSettings => after.startup_settings = true,
-                Command::SaveFamily(family) => {
+                Command::RentRollCard => after.card = true,
+                Command::ApplySettings(settings) => {
                     if let Some(path) = settings_path {
-                        // A failed save leaves the list in memory for this run.
-                        let _ = crate::store::save_family(path, &family);
+                        // A failed save leaves the settings in effect for
+                        // this run.
+                        let _ = crate::store::save_settings(path, &settings);
                     }
+                    after.apply = Some(settings);
                 }
-                // The rent roll card and the settings screen come with M5.
-                Command::RentRollCard | Command::Settings => {}
+                // Live turns these into ApplySettings.
+                Command::SaveFamily(_) | Command::Setting(_) | Command::Price(_) => {}
             }
         }
     });
@@ -440,6 +703,12 @@ fn finish(hwnd: HWND, after: &After) {
             );
         }
     }
+    if after.card {
+        save_card(hwnd);
+    }
+    if let Some(settings) = &after.apply {
+        apply(hwnd, settings);
+    }
 }
 
 fn key(code: u16) -> Option<Key> {
@@ -451,6 +720,7 @@ fn key(code: u16) -> Option<Key> {
         VK_ESCAPE => Key::Escape,
         VK_F2 => Key::F2,
         VK_F3 => Key::F3,
+        VK_BACK => Key::Backspace,
         _ => return None,
     })
 }
@@ -515,6 +785,57 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
+        // A typed character, for the custom price; Enter, Esc and Backspace
+        // come as keys.
+        WM_CHAR => {
+            if let Some(c) = char::from_u32(wparam.0 as u32)
+                && !c.is_control()
+            {
+                input(hwnd, Input::Char(c));
+            }
+            LRESULT(0)
+        }
+        // The close button hides the window to the tray (SPEC.md, Window
+        // and tray), unless the settings say it quits.
+        WM_CLOSE if close_hides() => {
+            // SAFETY: hides our own window.
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            LRESULT(0)
+        }
+        WM_TRAY => {
+            match (lparam.0 as u32) & 0xffff {
+                WM_LBUTTONUP => show_window(hwnd),
+                WM_RBUTTONUP | WM_CONTEXTMENU => match tray::menu(hwnd) {
+                    Some(tray::Choice::Open) => show_window(hwnd),
+                    Some(tray::Choice::RentRoll) => save_card(hwnd),
+                    Some(tray::Choice::Quit) => {
+                        // SAFETY: ends our own window and with it the app.
+                        unsafe {
+                            let _ = DestroyWindow(hwnd);
+                        }
+                    }
+                    None => {}
+                },
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_SHOW_FIRST => {
+            show_window(hwnd);
+            LRESULT(0)
+        }
+        m if m != 0 && m == TASKBAR_CREATED.get() => {
+            STATE.with(|s| {
+                if let Ok(mut s) = s.try_borrow_mut()
+                    && let Some(tray) = s.as_mut().and_then(|state| state.tray.as_mut())
+                {
+                    tray.readd();
+                }
+            });
+            LRESULT(0)
+        }
         WM_LBUTTONDOWN => {
             if let Some((x, y)) = canvas_point(lparam) {
                 input(hwnd, Input::Click { x, y });
@@ -567,6 +888,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_ERASEBKGND => LRESULT(1),
         WM_DESTROY => {
             save();
+            STATE.with(|s| {
+                if let Ok(mut s) = s.try_borrow_mut()
+                    && let Some(tray) = s.as_mut().and_then(|state| state.tray.as_mut())
+                {
+                    tray.remove();
+                }
+            });
             // SAFETY: ends this thread's message loop.
             unsafe { PostQuitMessage(0) };
             LRESULT(0)

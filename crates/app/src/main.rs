@@ -7,6 +7,9 @@
 
 mod cli;
 mod output;
+// The price-fetch rules; the fetch itself is the Windows layer's.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod pricing;
 // Runs only on Windows; on Linux its tests drive it with a fake machine.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod selftest;
@@ -20,6 +23,8 @@ mod win;
 use std::path::Path;
 use std::process::ExitCode;
 
+#[cfg(windows)]
+use ramlord_core::prices::PriceTable;
 use ramlord_core::scene::{CARD_PNG_SCALE, TOWER_PNG_SCALE};
 use ramlord_core::tenants::Lease;
 use ramlord_core::{Building, HueBook, Rules, Snapshot};
@@ -119,25 +124,39 @@ fn demo() -> ExitCode {
 
 #[cfg(windows)]
 fn run(minimized: bool) -> ExitCode {
-    // Watched time, flags and hues carry over from the last run; the
-    // Family list is kept in settings.json.
+    // Only one copy runs: a second start brings the first forward.
+    if !win::instance::first() {
+        return ExitCode::SUCCESS;
+    }
+    // Watched time, flags and hues carry over from the last run; settings
+    // live beside them. The Run key is the truth for start with Windows.
     let state_path = store::state_path();
     let state = state_path.as_deref().map(store::load).unwrap_or_default();
     let settings_path = store::settings_path();
-    let family = settings_path
+    let mut settings = settings_path
         .as_deref()
-        .map(store::load_family)
+        .map(store::load_settings)
         .unwrap_or_default();
+    settings.start_with_windows = win::extras::autostart();
+    // The embedded prices, or the last fetched file if it is newer.
+    let cache_path = store::prices_path();
+    let cached = cache_path
+        .as_deref()
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let prices = PriceTable::embedded().refreshed(cached.as_deref());
+    let mut live = ramlord_core::live::Live::new(
+        Rules::builtin(),
+        Lease::placeholder(),
+        state,
+        settings.family.clone(),
+    );
+    live.configure(settings, prices, win::extras::memory_type());
     let content = win::shell::Content::Live {
         provider: Box::new(win::provider::Provider::new()),
-        live: Box::new(ramlord_core::live::Live::new(
-            Rules::builtin(),
-            Lease::placeholder(),
-            state,
-            family,
-        )),
+        live: Box::new(live),
         state_path,
         settings_path,
+        cache_path,
     };
     match win::shell::show(content, minimized) {
         Ok(()) => ExitCode::SUCCESS,

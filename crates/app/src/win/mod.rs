@@ -10,8 +10,11 @@
 
 pub mod counters;
 pub mod evict;
+pub mod extras;
+pub mod instance;
 pub mod provider;
 pub mod shell;
+pub mod tray;
 
 use std::time::Duration;
 
