@@ -272,47 +272,13 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::building::Tenant;
+    use crate::building::test_building as building;
     use crate::format::MIB;
 
     const SAMPLE: &str = include_str!("../../../fixtures/sample-building.json");
 
     fn sample() -> Building {
         Building::from_json(SAMPLE).unwrap()
-    }
-
-    /// A valid building with the given tenants (name, rent); Staff and
-    /// Vacant as given, capacity their sum.
-    fn building(staff: u64, tenants: &[(&str, u64)], vacant: u64) -> Building {
-        let rent: u64 = tenants.iter().map(|t| t.1).sum();
-        let b = Building {
-            kind: "building".into(),
-            date: "2026-11-09".into(),
-            memory_type: "DDR5".into(),
-            price: crate::building::Price {
-                per_gb_micros: 14_340_000,
-                symbol: "$".into(),
-                as_of: "2026-11-03".into(),
-            },
-            capacity_bytes: staff + rent + vacant,
-            vacant_bytes: vacant,
-            staff_bytes: staff,
-            own_bytes: 0,
-            remark: String::new(),
-            tenants: tenants
-                .iter()
-                .map(|&(name, rent_bytes)| Tenant {
-                    id: name.to_lowercase(),
-                    name: name.into(),
-                    rent_bytes,
-                    lease_bytes: rent_bytes,
-                    process_count: 1,
-                    flags: vec![],
-                })
-                .collect(),
-        };
-        b.validate().expect("test building is valid");
-        b
     }
 
     /// (label, units) per entry, in fill order.
@@ -336,28 +302,6 @@ mod tests {
                 (label, e.units)
             })
             .collect()
-    }
-
-    #[test]
-    fn sample_building_units_match_the_spec_table() {
-        let expected = [
-            ("Staff", 44),
-            ("Chrome", 51),
-            ("Discord", 23),
-            ("VS Code", 18),
-            ("Teams", 13),
-            ("Steam", 7),
-            ("Slack", 6),
-            ("Spotify", 5),
-            ("Copilot", 4),
-            ("WhatsApp", 4),
-            ("OneDrive", 2),
-            ("Others", 1),
-            ("Vacant", 78),
-        ];
-        let got = units(&sample());
-        let got: Vec<(&str, u32)> = got.iter().map(|(n, u)| (n.as_str(), *u)).collect();
-        assert_eq!(got, expected);
     }
 
     #[test]

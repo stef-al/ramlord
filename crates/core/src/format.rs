@@ -130,12 +130,17 @@ pub fn wrap_balanced(text: &str, width: usize) -> Vec<String> {
         return Vec::new();
     }
     let total = words.iter().map(|w| w.chars().count()).sum::<usize>() + words.len() - 1;
-    let mut count = total.div_ceil(width);
+    // Never more lines than words: one word per line always fits, since no
+    // word is longer than `width`.
+    let mut count = total.div_ceil(width).min(words.len());
     loop {
         let mut best: Option<(usize, Vec<String>)> = None;
         search(&words, width, count, 0, &mut Vec::new(), &mut best);
         if let Some((_, lines)) = best {
             return lines;
+        }
+        if count >= words.len() {
+            return words;
         }
         count += 1;
     }
@@ -278,6 +283,14 @@ mod tests {
             lines.concat().replace(' ', ""),
             "SUPERCALIFRAGILISTICEXPIALIDOCIOUS-AND-MOREOK"
         );
+    }
+
+    #[test]
+    fn wrap_ends_when_a_cut_word_needs_fewer_lines_than_its_length_suggests() {
+        // 60 characters cut into two words of 30: 61 characters with the
+        // space would suggest three lines, but two words make two.
+        let x60 = "X".repeat(60);
+        assert_eq!(wrap_balanced(&x60, 30), ["X".repeat(30), "X".repeat(30)]);
     }
 
     #[test]

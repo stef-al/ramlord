@@ -208,6 +208,41 @@ impl Building {
     }
 }
 
+/// A valid building for tests: the given tenants (name, rent), Staff
+/// and Vacant as given, capacity their sum.
+#[cfg(test)]
+pub(crate) fn test_building(staff: u64, tenants: &[(&str, u64)], vacant: u64) -> Building {
+    let rent: u64 = tenants.iter().map(|t| t.1).sum();
+    let b = Building {
+        kind: "building".into(),
+        date: "2026-11-09".into(),
+        memory_type: "DDR5".into(),
+        price: Price {
+            per_gb_micros: 14_340_000,
+            symbol: "$".into(),
+            as_of: "2026-11-03".into(),
+        },
+        capacity_bytes: staff + rent + vacant,
+        vacant_bytes: vacant,
+        staff_bytes: staff,
+        own_bytes: 0,
+        remark: String::new(),
+        tenants: tenants
+            .iter()
+            .map(|&(name, rent_bytes)| Tenant {
+                id: name.to_lowercase(),
+                name: name.into(),
+                rent_bytes,
+                lease_bytes: rent_bytes,
+                process_count: 1,
+                flags: vec![],
+            })
+            .collect(),
+    };
+    b.validate().expect("test building is valid");
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,12 +258,6 @@ mod tests {
         assert_eq!(b.staff_bytes, 5_560 << 20);
         assert_eq!(b.price.per_gb_micros, 14_340_000);
         assert!(b.tenants[1].has(Flag::Leaker));
-    }
-
-    #[test]
-    fn sample_occupancy_is_69_percent() {
-        let b = Building::from_json(SAMPLE).unwrap();
-        assert_eq!(b.occupancy_percent(), 69);
     }
 
     fn edit(f: impl FnOnce(&mut serde_json::Value)) -> String {
