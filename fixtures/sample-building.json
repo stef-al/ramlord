@@ -1,0 +1,127 @@
+{
+  "kind": "building",
+  "date": "2026-11-09",
+  "memory_type": "DDR5",
+  "price": {
+    "per_gb_micros": 14340000,
+    "symbol": "$",
+    "as_of": "2026-11-03"
+  },
+  "capacity_bytes": 34359738368,
+  "vacant_bytes": 10522460160,
+  "staff_bytes": 5830082560,
+  "own_bytes": 32505856,
+  "remark": "TEAMS hasn't been home in 3 days.",
+  "tenants": [
+    {
+      "id": "chrome.exe",
+      "name": "Chrome",
+      "rent_bytes": 6872367104,
+      "lease_bytes": 8589934592,
+      "process_count": 47,
+      "flags": []
+    },
+    {
+      "id": "discord.exe",
+      "name": "Discord",
+      "rent_bytes": 3114270720,
+      "lease_bytes": 4401922048,
+      "process_count": 6,
+      "flags": [
+        "leaker"
+      ]
+    },
+    {
+      "id": "vscode.exe",
+      "name": "VS Code",
+      "rent_bytes": 2362441728,
+      "lease_bytes": 3221225472,
+      "process_count": 14,
+      "flags": []
+    },
+    {
+      "id": "teams.exe",
+      "name": "Teams",
+      "rent_bytes": 1717567488,
+      "lease_bytes": 2469396480,
+      "process_count": 9,
+      "flags": [
+        "away"
+      ]
+    },
+    {
+      "id": "steam.exe",
+      "name": "Steam",
+      "rent_bytes": 966787072,
+      "lease_bytes": 1288699904,
+      "process_count": 8,
+      "flags": [
+        "walls"
+      ]
+    },
+    {
+      "id": "slack.exe",
+      "name": "Slack",
+      "rent_bytes": 858783744,
+      "lease_bytes": 1180696576,
+      "process_count": 5,
+      "flags": [
+        "away"
+      ]
+    },
+    {
+      "id": "spotify.exe",
+      "name": "Spotify",
+      "rent_bytes": 643825664,
+      "lease_bytes": 912261120,
+      "process_count": 6,
+      "flags": []
+    },
+    {
+      "id": "copilot.exe",
+      "name": "Copilot",
+      "rent_bytes": 536870912,
+      "lease_bytes": 751828992,
+      "process_count": 4,
+      "flags": [
+        "squatter"
+      ]
+    },
+    {
+      "id": "whatsapp.exe",
+      "name": "WhatsApp",
+      "rent_bytes": 536870912,
+      "lease_bytes": 805306368,
+      "process_count": 7,
+      "flags": [
+        "squatter"
+      ]
+    },
+    {
+      "id": "onedrive.exe",
+      "name": "OneDrive",
+      "rent_bytes": 321912832,
+      "lease_bytes": 429916160,
+      "process_count": 2,
+      "flags": [
+        "walls"
+      ]
+    },
+    {
+      "id": "terminal.exe",
+      "name": "Terminal",
+      "rent_bytes": 42991616,
+      "lease_bytes": 75497472,
+      "process_count": 3,
+      "flags": []
+    },
+    {
+      "id": "notepad.exe",
+      "name": "Notepad",
+      "rent_bytes": 32505856,
+      "lease_bytes": 48234496,
+      "process_count": 1,
+      "flags": []
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+== system memory
+GetPerformanceInfo ok=1 total=8022 MB avail=7425 MB commit=596/8022 MB page=4096
+GetPhysicallyInstalledSystemMemory ok=1 (err 0) 8022 MB
+GetSystemFirmwareTable RSMB size=131 (err 0)
+== start notepad twice (one to close politely, one to force)
+notepad started: 1 1
+== processes
+  pid=48 ppid=40 services.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=20420 KB commit=12780 KB
+      image=C:\windows\system32\services.exe
+  pid=80 ppid=64 explorer.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=21028 KB commit=5284 KB
+      image=C:\windows\system32\explorer.exe
+  pid=104 ppid=48 winedevice.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=19352 KB commit=9920 KB
+      image=C:\windows\system32\winedevice.exe
+  pid=164 ppid=48 svchost.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=11560 KB commit=4444 KB
+      image=C:\windows\system32\svchost.exe
+  pid=188 ppid=48 plugplay.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=19560 KB commit=8048 KB
+      image=C:\windows\system32\plugplay.exe
+  pid=236 ppid=48 winedevice.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=31456 KB commit=12544 KB
+      image=C:\windows\system32\winedevice.exe
+  pid=308 ppid=292 services.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=11184 KB commit=3592 KB
+      image=C:\windows\system32\services.exe
+  pid=320 ppid=308 winedevice.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=12924 KB commit=5504 KB
+      image=C:\windows\system32\winedevice.exe
+  pid=344 ppid=0 probe.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=14440 KB commit=3432 KB
+      image=Z:\home\claude\ramlord\docs\reference\wine-probe\probe.exe
+  pid=352 ppid=344 notepad.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=31684 KB commit=7032 KB
+      image=C:\windows\system32\notepad.exe
+  pid=360 ppid=344 notepad.exe path_ok=1 times_ok=1 session_ok=1(1) EX2_ok=1(err 0) privWS=0 KB | EX_ok=1 WS=31884 KB commit=7056 KB
+      image=C:\windows\system32\notepad.exe
+process count=11 self=344
+== windows
+  visible window pid=352 class=Notepad 855x641
+  visible window pid=360 class=Notepad 855x641
+visible windows=2 foreground pid=352
+== evict
+polite WM_CLOSE: process exited
+force TerminateProcess ok=1: process exited
+== window
+frame bytes=368640
+SetProcessDpiAwarenessContext ok=0
+CreateWindowExW ok=1
+named mutex ok=1 already=0
+clipboard CF_DIB ok=1
+message loop ended, WM_PAINT seen=0
