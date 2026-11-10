@@ -1,0 +1,26 @@
+{
+  "about": "WALLS: no visible window for 10 watched minutes. Two hours of sleep after 9 minutes do not count; a window clears the flag.",
+  "capacity_mib": 16384,
+  "available_mib": 8192,
+  "ramlord_started_s": 3600,
+  "start_s": 3700,
+  "steps": [
+    { "for_s": 540, "every_s": 2, "focus": "editor",
+      "tenants": { "agent": { "mib": 300, "window": false, "started_s": 3650 },
+                   "editor": { "mib": 400, "started_s": 3650 } },
+      "expect": { "agent": [], "editor": [] } },
+    { "sleep_s": 7200 },
+    { "for_s": 30, "every_s": 2, "focus": "editor",
+      "tenants": { "agent": { "mib": 300, "window": false, "started_s": 3650 },
+                   "editor": { "mib": 400, "started_s": 3650 } },
+      "expect": { "agent": [] } },
+    { "for_s": 60, "every_s": 2, "focus": "editor",
+      "tenants": { "agent": { "mib": 300, "window": false, "started_s": 3650 },
+                   "editor": { "mib": 400, "started_s": 3650 } },
+      "expect": { "agent": ["walls"], "editor": [] } },
+    { "for_s": 4, "every_s": 2, "focus": "editor",
+      "tenants": { "agent": { "mib": 300, "window": true, "started_s": 3650 },
+                   "editor": { "mib": 400, "started_s": 3650 } },
+      "expect": { "agent": [] } }
+  ]
+}

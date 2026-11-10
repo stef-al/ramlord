@@ -7,20 +7,24 @@
 //!
 //! `tests/purity.rs` scans this crate's sources and fails on a breach.
 //!
-//! The pipeline so far: [`tenants`] groups a [`Snapshot`] into a
-//! [`Building`], [`layout`] divides it into 256 units, [`scene`] turns it
-//! into a draw list, and [`render`] turns the draw list into a [`Frame`].
+//! The pipeline: [`tenants`] groups a [`Snapshot`] into a [`Building`],
+//! [`flags`] adds the four flags over watched time, [`remarks`] picks the
+//! landlord's line, [`layout`] divides the building into 256 units,
+//! [`scene`] turns it into a draw list, and [`render`] turns the draw list
+//! into a [`Frame`]. [`live`] runs the whole pipeline sample by sample.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::float_arithmetic)]
 
 pub mod building;
 pub mod date;
+pub mod flags;
 pub mod font;
 pub mod format;
 pub mod layout;
 pub mod live;
 pub mod palette;
+pub mod remarks;
 pub mod render;
 pub mod rules;
 pub mod scene;

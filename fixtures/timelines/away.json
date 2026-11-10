@@ -1,0 +1,30 @@
+{
+  "about": "AWAY: a window, at least 100 MB and 4 watched hours without focus. Eight hours of sleep at 3h50 do not count; focus clears the flag. A 90 MB app and the focused app never get it.",
+  "capacity_mib": 16384,
+  "available_mib": 8192,
+  "ramlord_started_s": 3600,
+  "start_s": 3700,
+  "steps": [
+    { "for_s": 13800, "every_s": 5, "focus": "editor",
+      "tenants": { "viewer": { "mib": 150, "started_s": 3650 },
+                   "editor": { "mib": 600, "started_s": 3650 },
+                   "small": { "mib": 90, "started_s": 3650 } },
+      "expect": { "viewer": [], "editor": [], "small": [] } },
+    { "sleep_s": 28800 },
+    { "for_s": 540, "every_s": 5, "focus": "editor",
+      "tenants": { "viewer": { "mib": 150, "started_s": 3650 },
+                   "editor": { "mib": 600, "started_s": 3650 },
+                   "small": { "mib": 90, "started_s": 3650 } },
+      "expect": { "viewer": [] } },
+    { "for_s": 120, "every_s": 5, "focus": "editor",
+      "tenants": { "viewer": { "mib": 150, "started_s": 3650 },
+                   "editor": { "mib": 600, "started_s": 3650 },
+                   "small": { "mib": 90, "started_s": 3650 } },
+      "expect": { "viewer": ["away"], "editor": [], "small": [] } },
+    { "for_s": 10, "every_s": 5, "focus": "viewer",
+      "tenants": { "viewer": { "mib": 150, "started_s": 3650 },
+                   "editor": { "mib": 600, "started_s": 3650 },
+                   "small": { "mib": 90, "started_s": 3650 } },
+      "expect": { "viewer": [] } }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "about": "SQUAT: started within 10 minutes of sign-in, never focused, 30 watched minutes; RAMlord itself started a minute after sign-in. An hour of sleep at 29 minutes does not count, so just after it the tenant is not a squatter yet. A tenant started later never squats; focus clears the flag.",
+  "capacity_mib": 16384,
+  "available_mib": 8192,
+  "ramlord_started_s": 60,
+  "start_s": 120,
+  "steps": [
+    {
+      "for_s": 1740,
+      "every_s": 2,
+      "tenants": {
+        "helper": {
+          "mib": 200,
+          "started_s": 30
+        }
+      },
+      "expect": {
+        "helper": []
+      }
+    },
+    {
+      "sleep_s": 3600
+    },
+    {
+      "for_s": 10,
+      "every_s": 2,
+      "tenants": {
+        "helper": {
+          "mib": 200,
+          "started_s": 30
+        }
+      },
+      "expect": {
+        "helper": []
+      }
+    },
+    {
+      "for_s": 110,
+      "every_s": 2,
+      "tenants": {
+        "helper": {
+          "mib": 200,
+          "started_s": 30
+        },
+        "late": {
+          "mib": 200,
+          "started_s": 5400
+        }
+      },
+      "expect": {
+        "helper": [
+          "squatter"
+        ],
+        "late": []
+      }
+    },
+    {
+      "for_s": 1860,
+      "every_s": 2,
+      "tenants": {
+        "helper": {
+          "mib": 200,
+          "started_s": 30
+        },
+        "late": {
+          "mib": 200,
+          "started_s": 5400
+        }
+      },
+      "expect": {
+        "helper": [
+          "squatter"
+        ],
+        "late": []
+      }
+    },
+    {
+      "for_s": 4,
+      "every_s": 2,
+      "focus": "helper",
+      "tenants": {
+        "helper": {
+          "mib": 200,
+          "started_s": 30
+        },
+        "late": {
+          "mib": 200,
+          "started_s": 5400
+        }
+      },
+      "expect": {
+        "helper": [],
+        "late": []
+      }
+    }
+  ]
+}

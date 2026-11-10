@@ -22,3 +22,9 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The core's long simulations (flags over hours, state over 8 days) run in
+# debug test builds; optimizing just this crate keeps them quick. Overflow
+# checks and debug assertions stay on.
+[profile.dev.package.ramlord-core]
+opt-level = 2

@@ -40,6 +40,10 @@ pub struct TenantSample {
     pub process_count: u32,
     /// Member processes, lowest pid first.
     pub pids: Vec<u32>,
+    /// When its oldest member started (0 when unknown).
+    pub started_at_ms: u64,
+    /// Any member owns a visible window.
+    pub has_window: bool,
 }
 
 /// The result of grouping one snapshot.
@@ -235,11 +239,19 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
             lease_bytes: 0,
             process_count: 0,
             pids: Vec::new(),
+            started_at_ms: 0,
+            has_window: false,
         });
         tenant.rent_bytes += p.rent_bytes;
         tenant.lease_bytes += p.lease_bytes;
         tenant.process_count += 1;
         tenant.pids.push(pid);
+        tenant.has_window |= p.has_visible_window;
+        if p.started_at_ms > 0
+            && (tenant.started_at_ms == 0 || p.started_at_ms < tenant.started_at_ms)
+        {
+            tenant.started_at_ms = p.started_at_ms;
+        }
     }
     let own_bytes = snapshot
         .processes
@@ -285,10 +297,14 @@ impl Lease {
     }
 }
 
-/// Groups `snapshot` and builds the Building the layout draws. Tenants
-/// carry no flags yet; flags come with M3.
+/// Groups `snapshot` and builds the Building the layout draws, without
+/// flags: those need watched time, which `flags::Watch` keeps.
 pub fn building(snapshot: &Snapshot, rules: &Rules, lease: &Lease) -> Building {
-    let grouping = group(snapshot, rules);
+    building_of(snapshot, group(snapshot, rules), lease)
+}
+
+/// The Building for a snapshot already grouped.
+pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Building {
     let rent = grouping.rent_bytes();
     let (staff, vacant) = balance(snapshot.capacity_bytes, snapshot.available_bytes, rent);
     Building {

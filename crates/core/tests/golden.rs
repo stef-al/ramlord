@@ -6,6 +6,9 @@
 //! fixtures/golden/sample-tower.png --card fixtures/golden/sample-rent-roll.png`,
 //! look at them, and say in the commit what changed.
 
+mod timeline;
+
+use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
@@ -110,6 +113,29 @@ fn desk_snapshot_matches_golden_pixel_for_pixel() {
     assert_same_pixels(
         &frame.scaled(TOWER_PNG_SCALE),
         &repo().join("fixtures/golden/snapshot-desk-tower.png"),
+    );
+}
+
+/// A full building after an hour of watched time: the remark, a gold
+/// outline around the largest tenant, LEAK and WALLS (fixtures/timelines/full.json).
+#[test]
+fn full_building_timeline_matches_golden_pixel_for_pixel() {
+    use ramlord_core::flags::State;
+    use ramlord_core::live::Live;
+    let mut live = Live::new(
+        Rules::builtin(),
+        Lease::placeholder(),
+        State::default(),
+        BTreeSet::new(),
+    );
+    for event in timeline::expand(&timeline::load("full.json")) {
+        if let timeline::Event::Sample(s) = event {
+            live.update(&s).unwrap();
+        }
+    }
+    assert_same_pixels(
+        &live.frame().unwrap().scaled(TOWER_PNG_SCALE),
+        &repo().join("fixtures/golden/timeline-full-tower.png"),
     );
 }
 

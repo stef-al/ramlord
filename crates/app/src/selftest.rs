@@ -258,6 +258,8 @@ mod tests {
                 price: Price::placeholder(),
                 remark: String::new(),
             },
+            ramlord_core::flags::State::default(),
+            Default::default(),
         )
     }
 

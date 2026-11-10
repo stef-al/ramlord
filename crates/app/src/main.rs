@@ -121,6 +121,8 @@ fn run(minimized: bool) -> ExitCode {
         live: Box::new(ramlord_core::live::Live::new(
             Rules::builtin(),
             Lease::placeholder(),
+            ramlord_core::flags::State::default(),
+            Default::default(),
         )),
     };
     match win::shell::show(content, minimized) {
@@ -155,7 +157,14 @@ fn self_test(out: &Path) -> ExitCode {
         .unwrap_or(u64::MAX);
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
     let mut machine = win::Pc(win::provider::Provider::new());
-    let mut live = ramlord_core::live::Live::new(Rules::builtin(), Lease::placeholder());
+    // Off screen and with a fresh state: the self-test never touches the
+    // user's state file.
+    let mut live = ramlord_core::live::Live::new(
+        Rules::builtin(),
+        Lease::placeholder(),
+        ramlord_core::flags::State::default(),
+        Default::default(),
+    );
     let report = selftest::run(
         &mut machine,
         &mut live,

@@ -173,6 +173,19 @@ fn label_strips(building: &Building, layout: &Layout) -> Vec<(usize, Strip)> {
 /// The tower window: tower, rent roll and two status lines on a 384 by 240
 /// canvas, painted over a `SKY` background.
 pub fn tower(building: &Building, layout: &Layout) -> Vec<Draw> {
+    tower_highlighting(building, layout, None)
+}
+
+/// The tower window with one tenant outlined in gold: the largest tenant
+/// outside Family while the building is full (SPEC.md, The landlord's
+/// remark). Gold, because the largest tenant usually wears the first hue,
+/// red, where a red outline would vanish. `highlight` is an index into
+/// `Building::tenants`.
+pub fn tower_highlighting(
+    building: &Building,
+    layout: &Layout,
+    highlight: Option<usize>,
+) -> Vec<Draw> {
     let mut d = Vec::new();
     let w = WIDTH as i32;
     let h = HEIGHT as i32;
@@ -312,6 +325,10 @@ pub fn tower(building: &Building, layout: &Layout) -> Vec<Draw> {
     ));
     d.push(Draw::rect(gx1, GRID_Y - 1, gx1, bottom, OUTLINE));
 
+    if let Some(tenant) = highlight {
+        outline_owner(&mut d, layout, Owner::Tenant(tenant), GOLD);
+    }
+
     // Labels: NAME $RENT or NAME, a red up arrow after a leaker's.
     for (_, strip) in &strips {
         let (x, y) = cell_xy(strip.floor, strip.first_col);
@@ -386,6 +403,43 @@ pub fn tower(building: &Building, layout: &Layout) -> Vec<Draw> {
 
     rent_roll_panel(&mut d, building, layout);
     d
+}
+
+/// Outlines every edge between `owner`'s units and anyone else's, on the
+/// lines where the dark owner outline runs.
+fn outline_owner(d: &mut Vec<Draw>, layout: &Layout, owner: Owner, color: Rgb) {
+    for (index, &cell) in layout.cells.iter().enumerate() {
+        if cell != owner {
+            continue;
+        }
+        let (floor, col) = (index / COLS, index % COLS);
+        let (x, y) = cell_xy(floor, col);
+        let other = |k: Option<usize>| k.is_none_or(|k| layout.cells[k] != owner);
+        if other((col + 1 < COLS).then_some(index + 1)) {
+            d.push(Draw::rect(
+                x + CELL_W - 1,
+                y - 1,
+                x + CELL_W - 1,
+                y + CELL_H - 1,
+                color,
+            ));
+        }
+        if other((col > 0).then(|| index - 1)) {
+            d.push(Draw::rect(x - 1, y - 1, x - 1, y + CELL_H - 1, color));
+        }
+        if other((floor + 1 < FLOORS).then_some(index + COLS)) {
+            d.push(Draw::rect(x - 1, y - 1, x + CELL_W - 1, y - 1, color));
+        }
+        if other((floor > 0).then(|| index - COLS)) {
+            d.push(Draw::rect(
+                x - 1,
+                y + CELL_H - 1,
+                x + CELL_W - 1,
+                y + CELL_H - 1,
+                color,
+            ));
+        }
+    }
 }
 
 /// The rent roll panel: 224, 10, 154 by 204.
@@ -929,6 +983,27 @@ mod tests {
         for text in ["~$92", "~$241", "$141", "~$1"] {
             assert!(has_text(&receipt, text), "card lacks {text}");
         }
+    }
+
+    #[test]
+    fn a_highlight_outlines_the_tenant_in_gold() {
+        let b = Building::from_json(SAMPLE).unwrap();
+        let l = layout(&b);
+        let plain = tower(&b, &l);
+        let lit = tower_highlighting(&b, &l, Some(0)); // Chrome
+        let gold = |draws: &[Draw]| {
+            draws
+                .iter()
+                .filter(|d| matches!(d, Draw::Rect { color, .. } if *color == GOLD))
+                .count()
+        };
+        assert_eq!(gold(&plain), 0);
+        assert!(gold(&lit) > 10);
+        let frame = crate::render::rasterize(WIDTH, HEIGHT, SKY, &lit);
+        // Chrome's lowest units sit on floor 2 from column 12; the edge
+        // between Staff and Chrome above column 0 of floor 3 is gold.
+        let (x, y) = cell_xy(3, 0);
+        assert_eq!(frame.pixel(x as u32 + 5, (y + CELL_H - 1) as u32), GOLD);
     }
 
     #[test]

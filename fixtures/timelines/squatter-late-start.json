@@ -1,0 +1,12 @@
+{
+  "about": "SQUAT applies only when RAMlord itself started within 10 minutes of sign-in. Here it started after 20 minutes, so a tenant from boot that is never focused does not squat.",
+  "capacity_mib": 16384,
+  "available_mib": 8192,
+  "ramlord_started_s": 1200,
+  "start_s": 1260,
+  "steps": [
+    { "for_s": 2400, "every_s": 5,
+      "tenants": { "helper": { "mib": 200, "started_s": 30 } },
+      "expect": { "helper": [] } }
+  ]
+}

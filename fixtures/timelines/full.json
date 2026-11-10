@@ -1,0 +1,15 @@
+{
+  "about": "A full building: 6% vacant. After an hour the chat app leaks and the sync agent lives in the walls, but the full building outranks the leak remark, and the browser, the largest tenant, is outlined in red.",
+  "capacity_mib": 16384,
+  "available_mib": 1000,
+  "ramlord_started_s": 3600,
+  "start_s": 3700,
+  "steps": [
+    { "for_s": 3660, "every_s": 5, "focus": "browser",
+      "tenants": { "browser": { "mib": 6000, "started_s": 3650 },
+                   "chat": { "mib": [800, 2600], "started_s": 3650 },
+                   "sync": { "mib": 600, "window": false, "started_s": 3650 },
+                   "notes": { "mib": 300, "started_s": 3650 } },
+      "expect": { "browser": [], "chat": ["leaker"], "sync": ["walls"], "notes": [] } }
+  ]
+}

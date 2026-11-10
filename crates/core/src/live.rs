@@ -1,50 +1,87 @@
 //! The running tower: one snapshot after another in, a frame out. The
-//! Windows layer feeds it every 2 seconds; `--self-test` drives it off
-//! screen. It keeps hues and the smoother between snapshots.
+//! Windows layer feeds it a snapshot every 2 seconds and the foreground
+//! window every second; `--self-test` drives it off screen. Between
+//! snapshots it keeps watched time, flags and hues (the state file), the
+//! remark, and the smoother.
+
+use std::collections::BTreeSet;
 
 use crate::building::{Building, BuildingError};
-use crate::layout::{HueBook, Layout};
+use crate::flags::{State, Watch};
+use crate::layout::Layout;
 use crate::palette::SKY;
+use crate::remarks::{Kind, Remarks, Sample};
 use crate::render::{Frame, rasterize};
 use crate::rules::Rules;
 use crate::scene;
 use crate::smooth::Smoother;
 use crate::snapshot::Snapshot;
-use crate::tenants::{Lease, building};
+use crate::tenants::{Lease, building_of, group};
 
 pub struct Live {
     rules: Rules,
     lease: Lease,
+    watch: Watch,
+    remarks: Remarks,
     smoother: Smoother,
-    hues: HueBook,
     current: Option<Building>,
     frame: Option<Frame>,
 }
 
 impl Live {
-    pub fn new(rules: Rules, lease: Lease) -> Live {
+    /// `state` is what the last run saved (or `State::default()`);
+    /// `family` lists tenant ids the user marked as Family.
+    pub fn new(rules: Rules, lease: Lease, state: State, family: BTreeSet<String>) -> Live {
         Live {
             rules,
             lease,
+            watch: Watch::new(state, family),
+            remarks: Remarks::new(),
             smoother: Smoother::new(),
-            hues: HueBook::new(),
             current: None,
             frame: None,
         }
     }
 
-    /// Groups `snapshot`, lays out the smoothed building and draws the tower
-    /// with current numbers. Returns whether the frame changed.
+    /// Credits focus to the tenant owning `pid`; call once a second.
+    pub fn focus(&mut self, pid: u32) {
+        self.watch.focus(pid);
+    }
+
+    /// Groups `snapshot`, advances watched time and flags, picks the
+    /// remark, lays out the smoothed building and draws the tower with
+    /// current numbers. Returns whether the frame changed.
     pub fn update(&mut self, snapshot: &Snapshot) -> Result<bool, BuildingError> {
-        let current = building(snapshot, &self.rules, &self.lease);
+        let grouping = group(snapshot, &self.rules);
+        let gained = self.watch.observe(snapshot, &grouping);
+        let mut current = building_of(snapshot, grouping, &self.lease);
+        for tenant in &mut current.tenants {
+            tenant.flags = self.watch.flags_of(&tenant.id).to_vec();
+        }
+        let sample = Sample {
+            watched_ms: self.watch.state().watched_ms,
+            commit_used_bytes: snapshot.commit_used_bytes,
+            commit_limit_bytes: snapshot.commit_limit_bytes,
+            signed_in_at_ms: snapshot.signed_in_at_ms,
+            gained: &gained,
+        };
+        let mut told = self.watch.state().squatters_told;
+        let remark = self.remarks.update(&current, &sample, &mut told).clone();
+        self.watch.state_mut().squatters_told = told;
+        current.remark = remark.text;
         current.validate()?;
+
         let smoothed = self.smoother.smooth(snapshot.at_ms, &current);
         let order = self.smoother.order(snapshot.at_ms, &smoothed);
-        let (layout, hues) = Layout::ordered(&smoothed, &self.hues, &order);
-        self.hues = hues;
+        let (layout, hues) = Layout::ordered(&smoothed, &self.watch.state().hues(), &order);
+        self.watch.state_mut().keep_hues(&hues);
+        let highlight = match (remark.kind, remark.tenant) {
+            (Kind::Full, Some(id)) => current.tenants.iter().position(|t| t.id == id),
+            _ => None,
+        };
         // The smoothed building lists the same tenants in the same order,
         // so the layout's tenant indices hold for `current` too.
-        let draws = scene::tower(&current, &layout);
+        let draws = scene::tower_highlighting(&current, &layout, highlight);
         let frame = rasterize(scene::WIDTH, scene::HEIGHT, SKY, &draws);
         let changed = self.frame.as_ref() != Some(&frame);
         self.frame = Some(frame);
@@ -57,13 +94,14 @@ impl Live {
         self.frame.as_ref()
     }
 
-    /// The last building, with current numbers.
+    /// The last building, with current numbers, flags and the remark.
     pub fn building(&self) -> Option<&Building> {
         self.current.as_ref()
     }
 
-    pub fn hues(&self) -> &HueBook {
-        &self.hues
+    /// What to save in `state.json`.
+    pub fn state(&self) -> &State {
+        self.watch.state()
     }
 }
 
@@ -109,6 +147,8 @@ mod tests {
                 price: Price::placeholder(),
                 remark: String::new(),
             },
+            State::default(),
+            BTreeSet::new(),
         )
     }
 
@@ -126,9 +166,9 @@ mod tests {
     fn hues_are_kept_between_snapshots() {
         let mut live = live();
         live.update(&snapshot(0, 1000)).unwrap();
-        let first = live.hues().clone();
+        let first = live.state().hues();
         live.update(&snapshot(2_000, 100)).unwrap(); // Slack now leads
-        assert_eq!(live.hues(), &first);
+        assert_eq!(live.state().hues(), first);
         assert_eq!(live.building().unwrap().tenants.len(), 2);
     }
 }
