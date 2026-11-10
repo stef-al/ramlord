@@ -1,0 +1,60 @@
+{
+  "budgets": [
+    {
+      "limit": 5242880,
+      "name": "exe size",
+      "pass": true,
+      "unit": "bytes",
+      "value": 782848
+    },
+    {
+      "limit": 41943040,
+      "name": "own private working set",
+      "pass": true,
+      "unit": "bytes",
+      "value": 20221952
+    },
+    {
+      "limit": 100,
+      "name": "average CPU",
+      "pass": true,
+      "unit": "basis points of the machine",
+      "value": 4
+    },
+    {
+      "limit": 50000,
+      "name": "one snapshot",
+      "pass": true,
+      "unit": "microseconds, slowest",
+      "value": 32298
+    },
+    {
+      "limit": 5000,
+      "name": "one frame",
+      "pass": true,
+      "unit": "microseconds, slowest",
+      "value": 711
+    }
+  ],
+  "errors": [],
+  "frame_us": [
+    443,
+    711,
+    312,
+    362,
+    411
+  ],
+  "pass": true,
+  "processes": 10,
+  "rent_is_estimate": true,
+  "samples": 5,
+  "snapshot_us": [
+    32298,
+    7098,
+    5805,
+    5734,
+    6186
+  ],
+  "tenants": 0,
+  "wall_ms": 10000
+}
