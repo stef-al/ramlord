@@ -1032,7 +1032,10 @@ fn details_panel(
         (
             Some(FRAME),
             "GALLERY",
-            part(building.gallery_bytes > 0, gb(tenant.gpu_bytes)),
+            part(
+                building.gallery_bytes > 0,
+                format!("~{}", gb(tenant.gpu_bytes)),
+            ),
         ),
         (
             Some(CARDBOARD),
@@ -1191,7 +1194,7 @@ fn staff_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, building: &Building
             "GALLERY",
             part(
                 building.gallery_bytes > 0,
-                gb(own(Owner::Gallery(Holder::Staff))),
+                format!("~{}", gb(own(Owner::Gallery(Holder::Staff)))),
             ),
         );
         swatch_row(

@@ -321,6 +321,48 @@ Settings live in `%APPDATA%\RAMlord\settings.json`. State (hues, watched-time co
 
 **Timing.** Sample processes and memory every 2 seconds, or every 5 while the window is hidden. Sample focus every second and windows every 5 seconds. Redraw only when the scene changes, at most 10 frames a second.
 
+## After M4: what the owner added
+
+The owner asked for these after M4, from dumps of a 16 GB laptop whose Staff looked far too large. They extend the sections above; where they differ, this section wins. The tests pin each of them down.
+
+**Measured besides.** Two more sources, both documented and readable without administrator rights.
+
+| Number | Source on Windows | Used for |
+| --- | --- | --- |
+| Every process | `NtQuerySystemInformation(SystemProcessInformation)`: private working set, working set, commit, parent, session and create time for all processes, even those that cannot be opened | Rent, lease, Staff's services |
+| Compressed memory | The working set of the Memory Compression process | The boxes |
+| Graphics memory | Performance counters `GPU Adapter Memory(*)\Shared Usage` (all adapters) and `GPU Process Memory(*)\Shared Usage` per process | The gallery |
+| Staff's parts | Performance counters of the Memory object: Pool Paged Resident, System Cache Resident, System Driver Resident, System Code Resident, Modified Page List, the Standby Cache lists and Free & Zero Page List; `KernelNonpaged` from `GetPerformanceInfo` | The Staff card |
+
+Counters are added by their English names (`PdhAddEnglishCounterW`), so every language of Windows answers. The memory counters are read at every sample, graphics memory every 5 seconds. A counter that is missing reads as 0. They are part of the snapshot contract and of `--dump`.
+
+**Five parts, not three.** The building is Staff, the tenants' rent, the gallery, the boxes and Vacant, and they sum to capacity.
+
+- **Boxes** are compressed memory: the Memory Compression process's working set. They sit first in fill order, in the basement.
+- **The gallery** is graphics memory in RAM, which no process's working set includes. On a PC with built-in graphics it can be gigabytes. Its size is the adapters' Shared Usage, which matches Task Manager's "Shared GPU memory". It comes after the boxes and before Staff.
+- Vacant is measured and comes first. The gallery comes out of what would be Staff, never out of Vacant. Staff is what is left.
+- Rule 3's fill order becomes: boxes, gallery, Staff, named tenants, Others, Vacant. Rule 5 does not apply to boxes and pictures: a share too small for a unit gets none.
+
+**Whose boxes and pictures.** Every box and picture has a holder: a named tenant, Others or Staff.
+
+- A process's graphics memory is its Shared Usage capped at its commit beyond its working set. Windows counts every surface a process can see, so the desktop compositor, which sees every window's, reports many times what it holds (11 GB on the owner's PC, against 2.7 GB in use). A process pays commit for the graphics memory it allocates and none for what it only sees. The estimates are fitted to the gallery.
+- The boxes are split by packed memory: commit beyond the working set and the pictures, the best estimate Windows allows of whose pages are compressed. Staff's processes have packed memory too.
+- A named tenant whose share is at least half a unit gets its own boxes or pictures, in its hue. Smaller shares and the merged tenants' are Others', in Others' gray. Staff's, and what no process claims, are plain cardboard and plain canvas, next to Staff.
+
+**VM hosts.** A process in `vm_hosts` (`vmmem`, Windows Sandbox's, Android's, HP Sure Click's `br-uxendm.exe`) is a tenant even in session 0. Its rent is its whole working set, because a guest's memory is mapped into the host, not private to it.
+
+**Processes that cannot be opened.** The process list names every process, but one RAMlord cannot open is Staff, as rule 1 says, whatever its name.
+
+**Clicking.** Every unit, box and picture can be clicked. A tenant's opens its details card. Staff's open the Staff card and Others' the Others card; so do the STAFF and OTHERS lines of the rent roll. What is selected is outlined everywhere it lives: its units, its boxes and its pictures. A tenant merged into Others lights up Others.
+
+**The details card's lease.** LEASE is drawn as a bar and broken down: IN RAM (the rent), its GALLERY pictures, its estimated share of the BOXES, and the rest ON PAPER, leased but in the page file or never touched. An app that reserves 1.5 GB and uses 0.3 GB shows a mostly empty bar. GALLERY and BOXES read `-` when the building has none. The name and rent share the top line.
+
+**The Staff card.** It lists what Staff is made of, cut in this order so the parts always sum to Staff: services (Staff processes' private memory), kernel pools in RAM, drivers and kernel code in RAM, the file cache in RAM, pages waiting to be written to disk, memory the hardware reserves, and SHARED, OTHER for the rest. Below come Staff's own pictures and boxes. Esc or Back closes it.
+
+**The Others card.** It lists everyone the `OTHERS (n)` line sums, largest first, 13 to a page, with MORE to turn pages. A row opens that app's details card with all its actions; Back or Esc returns to the list. Up and Down move along the list, Enter opens, Delete asks to evict.
+
+**Remaining limits.** Windows says nothing more about SHARED, OTHER without administrator rights: shared program code and files, page tables, memory drivers lock. A process's graphics memory and its boxes are estimates, marked `~` where they are shown as amounts.
+
 ## Architecture
 
 All behavior lives in a pure core that turns a memory snapshot into pixels. A thin Windows layer feeds it and shows the result, so everything except that layer builds, runs and tests on Linux.

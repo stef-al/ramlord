@@ -18,3 +18,7 @@ Screenshots and outputs that back a milestone's "done when" boxes.
 | `staff-gallery-details.png` | After M4, at the owner's request: Chrome's card on `fixtures/snapshot-gallery.json` with the lease broken down (in RAM, its pictures in the gallery, its share of the boxes, on paper), and the gallery's framed pictures above the boxes. |
 | `staff-gallery-staff.png` | The Staff card on the same snapshot: Staff's parts from Windows' counters, which add up to Staff. |
 | `staff-gallery-wine.png` | The Staff card opened with a click on a Staff unit in the live app under Wine. Wine has none of the counters, so everything but SERVICES is SHARED, OTHER. |
+| `after-m4-holder-chrome.png` | A click on one of Chrome's boxes: Chrome's units, boxes and pictures are all outlined, and its card shows its lease broken down (`fixtures/snapshot-gallery.json`). |
+| `after-m4-holder-staff.png` | A click on one of Staff's pictures: the Staff card, with Staff's units, plain canvas pictures and cardboard box outlined, and Staff's own pictures and boxes below its parts. |
+| `after-m4-others-card.png` | The Others card on a PC with twenty small apps: 22 apps, 13 to a page, MORE 1/2; Others' units outlined in the tower. |
+| `after-m4-others-details.png` | A row of the Others card opens that app's details card, with Evict and Family; Back returns to the list. |

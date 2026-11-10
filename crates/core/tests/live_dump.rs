@@ -171,6 +171,27 @@ fn a_live_dump_groups_into_staff_tenants_and_vacant_that_sum_to_capacity() {
         }
     );
 
+    // The gallery by holder, as the tower hangs it.
+    let (named, _) = ramlord_core::layout::split_named(&b);
+    let holders: Vec<String> = ramlord_core::layout::gallery_shares(&b, &named)
+        .iter()
+        .map(|&(holder, bytes)| {
+            let who = match holder {
+                ramlord_core::layout::Holder::Tenant(t) => b.tenants[t].name.clone(),
+                other => format!("{other:?}"),
+            };
+            format!("{who} {} MiB", bytes / MIB)
+        })
+        .collect();
+    println!(
+        "::notice title=Gallery by holder::{}",
+        if holders.is_empty() {
+            "no gallery".to_string()
+        } else {
+            holders.join(", ")
+        }
+    );
+
     let mut largest: Vec<_> = grouping.tenants.iter().collect();
     largest.sort_by_key(|t| std::cmp::Reverse(t.rent_bytes));
     let top: Vec<String> = largest

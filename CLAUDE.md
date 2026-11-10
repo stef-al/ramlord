@@ -67,16 +67,14 @@ the click regions with the draw list, `Ui::input` turns a click or key into
 `Command`s for the Windows layer, and eviction is the `Eviction` state
 machine. `crates/app/src/win/evict.rs` only carries the commands out.
 
-Beyond SPEC.md, at the owner's request: the boxes in the basement
-(compressed memory, the Memory Compression process), the gallery (graphics
-memory in RAM, per process from the GPU Process Memory counters), VM hosts
-as tenants billed for their whole working set (`vm_hosts` in the rules,
-HP Sure Click included), the Staff card with Staff's parts
-(`StaffParts`, cut so they sum to Staff), and the details card's lease
-breakdown (in RAM, gallery, boxes share, on paper). The building sums
-Staff, rent, gallery, boxes and Vacant to capacity.
-`crates/app/src/win/counters.rs` reads the performance counters through
-pdh.dll by their English names.
+SPEC.md's section "After M4: what the owner added" covers the boxes, the
+gallery (graphics memory; a process's share is its Shared Usage capped at
+its commit beyond its working set), VM hosts, holders (`layout::Holder`:
+every unit, box and picture leads to a tenant, Staff or Others), the
+Staff and Others cards and the lease breakdown. The building sums Staff,
+rent, gallery, boxes and Vacant to capacity; the gallery never squeezes
+Vacant. `crates/app/src/win/counters.rs` reads the performance counters
+through pdh.dll by their English names.
 
 Timelines (`fixtures/timelines/*.json`, format in
 `crates/core/tests/timeline/mod.rs`) describe hours of samples, sleeps and
