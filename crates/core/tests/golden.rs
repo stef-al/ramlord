@@ -10,7 +10,8 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use ramlord_core::scene::{CARD_PNG_SCALE, TOWER_PNG_SCALE};
-use ramlord_core::{Building, Frame, HueBook, render_card, render_tower};
+use ramlord_core::tenants::{Lease, building};
+use ramlord_core::{Building, Frame, HueBook, Rules, Snapshot, render_card, render_tower};
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -94,6 +95,21 @@ fn sample_matches_the_reference_renders() {
     assert_same_pixels(
         &render_card(&b, &HueBook::new()).scaled(CARD_PNG_SCALE),
         &repo().join("docs/reference/rent-roll.png"),
+    );
+}
+
+/// A hand-written snapshot of a 16 GB PC, grouped with the built-in rules:
+/// the `--snapshot` path from processes to pixels.
+#[test]
+fn desk_snapshot_matches_golden_pixel_for_pixel() {
+    let text = std::fs::read_to_string(repo().join("fixtures/snapshot-desk.json")).unwrap();
+    let snapshot = Snapshot::from_json(&text).unwrap();
+    let b = building(&snapshot, &Rules::builtin(), &Lease::placeholder());
+    b.validate().unwrap();
+    let (frame, _) = render_tower(&b, &HueBook::new());
+    assert_same_pixels(
+        &frame.scaled(TOWER_PNG_SCALE),
+        &repo().join("fixtures/golden/snapshot-desk-tower.png"),
     );
 }
 

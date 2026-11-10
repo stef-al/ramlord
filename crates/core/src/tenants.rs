@@ -268,6 +268,18 @@ pub struct Lease {
     pub remark: String,
 }
 
+impl Lease {
+    /// Until M5 detects the memory type and reads the price file, a live
+    /// building says RAM at the DDR5 price; remarks come with M3.
+    pub fn placeholder() -> Lease {
+        Lease {
+            memory_type: "RAM".into(),
+            price: Price::placeholder(),
+            remark: String::new(),
+        }
+    }
+}
+
 /// Groups `snapshot` and builds the Building the layout draws. Tenants
 /// carry no flags yet; flags come with M3.
 pub fn building(snapshot: &Snapshot, rules: &Rules, lease: &Lease) -> Building {
