@@ -31,6 +31,7 @@ impl Pc {
             foreground_pid: None,
             rent_is_estimate: false,
             processes: Vec::new(),
+            ..Default::default()
         });
         pc.add(4, 0, None, 0).session = 0; // System: cannot be opened
         pc.add(50, 4, Some(SVCHOST), 30).session = 0;
@@ -50,6 +51,7 @@ impl Pc {
             lease_bytes: rent_mib * MIB * 3 / 2,
             has_visible_window: false,
             is_self: false,
+            ..Default::default()
         });
         self.0.processes.last_mut().unwrap()
     }

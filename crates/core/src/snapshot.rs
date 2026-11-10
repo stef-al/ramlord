@@ -19,6 +19,18 @@ pub struct Snapshot {
     /// whole working set instead.
     pub rent_is_estimate: bool,
     pub processes: Vec<Process>,
+    /// Physical memory Windows manages: capacity minus what the hardware
+    /// reserves. 0 when unknown. For diagnosis; the layout does not use it.
+    #[serde(default)]
+    pub physical_total_bytes: u64,
+    /// Kernel paged and nonpaged pools: part of Staff. For diagnosis.
+    #[serde(default)]
+    pub kernel_paged_bytes: u64,
+    #[serde(default)]
+    pub kernel_nonpaged_bytes: u64,
+    /// The system file cache's working set: part of Staff. For diagnosis.
+    #[serde(default)]
+    pub system_cache_bytes: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -29,8 +41,13 @@ pub struct Process {
     /// 0 when unknown.
     pub started_at_ms: u64,
     pub session: u32,
-    /// None when the process cannot be opened.
+    /// None when the process cannot be opened, and for session 0
+    /// processes, which are not opened.
     pub image_path: Option<String>,
+    /// The name in the process list, such as `chrome.exe`, `vmmem` or
+    /// `MemCompression`: known even when the process cannot be opened.
+    #[serde(default)]
+    pub image_name: Option<String>,
     /// FileDescription of the image. None when unknown, and for session 0
     /// processes, which are always Staff and never named.
     pub description: Option<String>,
@@ -38,14 +55,22 @@ pub struct Process {
     pub rent_bytes: u64,
     /// Commit charge.
     pub lease_bytes: u64,
+    /// The whole working set, shared pages included. 0 when unknown.
+    #[serde(default)]
+    pub working_set_bytes: u64,
     pub has_visible_window: bool,
     pub is_self: bool,
 }
 
 impl Process {
-    /// The image's file name in lower case, such as `chrome.exe`.
-    pub fn image_name(&self) -> Option<String> {
-        self.image_path.as_deref().map(file_name)
+    /// The image's file name in lower case, such as `chrome.exe`: from the
+    /// path when the process could be opened, else from the process list.
+    pub fn exe(&self) -> Option<String> {
+        self.image_path
+            .as_deref()
+            .map(file_name)
+            .or_else(|| self.image_name.as_deref().map(str::to_lowercase))
+            .filter(|n| !n.is_empty())
     }
 }
 
@@ -134,6 +159,29 @@ mod tests {
             s.processes[0].image_path.as_deref(),
             Some(r"C:\Users\Adam\app.exe")
         );
+    }
+
+    #[test]
+    fn the_exe_name_comes_from_the_path_or_else_the_list() {
+        let mut p = Process {
+            image_name: Some("vmmem".into()),
+            ..Process::default()
+        };
+        assert_eq!(p.exe().as_deref(), Some("vmmem"));
+        p.image_path = Some(r"C:\X\Chrome.exe".into());
+        assert_eq!(p.exe().as_deref(), Some("chrome.exe"));
+        assert_eq!(Process::default().exe(), None);
+    }
+
+    #[test]
+    fn older_dumps_without_the_new_fields_still_read() {
+        let old = r#"{"at_ms":1,"capacity_bytes":2,"available_bytes":1,"commit_used_bytes":0,
+            "commit_limit_bytes":0,"signed_in_at_ms":0,"foreground_pid":null,"rent_is_estimate":false,
+            "processes":[{"pid":4,"parent_pid":0,"started_at_ms":0,"session":0,"image_path":null,
+            "description":null,"rent_bytes":0,"lease_bytes":0,"has_visible_window":false,"is_self":false}]}"#;
+        let s = Snapshot::from_json(old).unwrap();
+        assert_eq!(s.processes[0].image_name, None);
+        assert_eq!(s.physical_total_bytes, 0);
     }
 
     #[test]

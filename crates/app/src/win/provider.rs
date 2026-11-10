@@ -1,12 +1,22 @@
 //! The provider: builds a Snapshot from Win32 (SPEC.md, What is measured;
 //! The Windows layer). It reads; it never changes anything.
+//!
+//! One `NtQuerySystemInformation(SystemProcessInformation)` call lists every
+//! process with its private working set, working set, commit, session,
+//! start time, parent and name, without opening any of them: this is how
+//! Task Manager measures processes it cannot open, such as services. Only
+//! processes outside session 0 are opened, for their image path, owner
+//! and FileDescription.
 
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::c_void;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ramlord_core::snapshot::{Process, Snapshot};
-use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM, RECT, TRUE};
+use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SystemProcessInformation};
+use windows::Win32::Foundation::{
+    CloseHandle, FILETIME, HANDLE, HWND, LPARAM, RECT, STATUS_INFO_LENGTH_MISMATCH, TRUE,
+};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Security::{
     GetLengthSid, GetTokenInformation, IsValidSid, TOKEN_QUERY, TOKEN_USER, TokenUser,
@@ -14,19 +24,16 @@ use windows::Win32::Security::{
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
-use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
-};
 use windows::Win32::System::ProcessStatus::{
     GetPerformanceInfo, GetProcessMemoryInfo, PERFORMANCE_INFORMATION, PROCESS_MEMORY_COUNTERS,
     PROCESS_MEMORY_COUNTERS_EX2,
 };
-use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::SystemInformation::GetPhysicallyInstalledSystemMemory;
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
+use windows::Win32::System::WindowsProgramming::SYSTEM_PROCESS_INFORMATION;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow,
     GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, WS_EX_TOOLWINDOW,
@@ -49,11 +56,15 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// 100-nanosecond intervals since 1601 to milliseconds since 1970.
-fn filetime_to_unix_ms(ft: FILETIME) -> u64 {
+/// 100-nanosecond intervals since 1601 to milliseconds since 1970; 0 for
+/// an unknown time.
+fn ticks_to_unix_ms(ticks: u64) -> u64 {
     const EPOCH_DIFFERENCE: u64 = 116_444_736_000_000_000;
-    let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
     ticks.saturating_sub(EPOCH_DIFFERENCE) / 10_000
+}
+
+fn filetime_to_unix_ms(ft: FILETIME) -> u64 {
+    ticks_to_unix_ms((u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime))
 }
 
 fn filetime_duration(ft: FILETIME) -> Duration {
@@ -61,12 +72,11 @@ fn filetime_duration(ft: FILETIME) -> Duration {
     Duration::from_nanos(ticks.saturating_mul(100))
 }
 
-/// Memory counters of one process: private working set (None when the
-/// EX2 structure is not supported), working set and commit charge.
+/// RAMlord's own memory: private working set (None when the EX2
+/// structure is not supported) and working set.
 struct Counters {
     private_ws: Option<u64>,
     ws: u64,
-    commit: u64,
 }
 
 fn counters(process: HANDLE) -> Option<Counters> {
@@ -80,7 +90,6 @@ fn counters(process: HANDLE) -> Option<Counters> {
         return Some(Counters {
             private_ws: Some(ex2.PrivateWorkingSetSize as u64),
             ws: ex2.WorkingSetSize as u64,
-            commit: ex2.PagefileUsage as u64,
         });
     }
     let mut basic = PROCESS_MEMORY_COUNTERS {
@@ -92,7 +101,6 @@ fn counters(process: HANDLE) -> Option<Counters> {
         return Some(Counters {
             private_ws: None,
             ws: basic.WorkingSetSize as u64,
-            commit: basic.PagefileUsage as u64,
         });
     }
     None
@@ -122,7 +130,6 @@ pub fn own_private_bytes() -> u64 {
 struct Opened {
     path: Option<String>,
     started_at_ms: u64,
-    counters: Option<Counters>,
     /// The SID of the user the process runs as, if it can be read.
     owner: Option<Vec<u8>>,
 }
@@ -194,9 +201,100 @@ fn open(pid: u32) -> Option<Opened> {
     Some(Opened {
         path,
         started_at_ms,
-        counters: counters(handle.0),
         owner: owner_sid(handle.0),
     })
+}
+
+/// One entry of the system's process list.
+struct Listed {
+    pid: u32,
+    parent_pid: u32,
+    session: u32,
+    started_at_ms: u64,
+    name: String,
+    private_ws: u64,
+    ws: u64,
+    commit: u64,
+}
+
+/// Where Windows keeps two fields inside what the documented
+/// SYSTEM_PROCESS_INFORMATION calls `Reserved1` (the layout since Vista,
+/// which Task Manager reads): the private working set and the create time.
+const PRIVATE_WS_AT: usize = 0;
+const CREATE_TIME_AT: usize = 24;
+
+/// The name of a process list entry; its buffer must lie inside the list.
+fn listed_name(info: &SYSTEM_PROCESS_INFORMATION, list: &[u64]) -> String {
+    let name = &info.ImageName;
+    let lo = list.as_ptr() as usize;
+    let hi = lo + list.len() * 8;
+    let start = name.Buffer.0 as usize;
+    let bytes = usize::from(name.Length);
+    if name.Buffer.is_null() || bytes == 0 || start < lo || start + bytes > hi || start % 2 != 0 {
+        return String::new();
+    }
+    // SAFETY: the name's `bytes` lie inside `list`, checked above, and are
+    // aligned UTF-16.
+    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(name.Buffer.0, bytes / 2) })
+}
+
+/// Every process, from one NtQuerySystemInformation call.
+fn process_list() -> Result<Vec<Listed>, String> {
+    // u64 words keep every entry 8-byte aligned.
+    let mut list: Vec<u64> = vec![0; 64 * 1024];
+    for _ in 0..8 {
+        let bytes = u32::try_from(list.len() * 8).unwrap_or(u32::MAX);
+        let mut needed = 0u32;
+        // SAFETY: the buffer holds `bytes` bytes, as the call is told.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SystemProcessInformation,
+                list.as_mut_ptr().cast(),
+                bytes,
+                &mut needed,
+            )
+        };
+        if status == STATUS_INFO_LENGTH_MISMATCH {
+            // Processes come and go between calls: ask for some room more.
+            let want = (needed as usize).max(list.len() * 8) + 64 * 1024;
+            list.resize(want.div_ceil(8), 0);
+            continue;
+        }
+        if status.0 < 0 {
+            return Err(format!("NtQuerySystemInformation: {:#010x}", status.0));
+        }
+        let mut found = Vec::new();
+        let mut offset = 0usize;
+        let size = size_of::<SYSTEM_PROCESS_INFORMATION>();
+        while offset + size <= list.len() * 8 {
+            // SAFETY: the entry lies inside `list` (checked by the loop) at an
+            // offset the system aligned, in a buffer aligned to 8.
+            let info = unsafe {
+                &*(list.as_ptr().cast::<u8>().add(offset) as *const SYSTEM_PROCESS_INFORMATION)
+            };
+            let field = |at: usize| {
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&info.Reserved1[at..at + 8]);
+                u64::from_ne_bytes(bytes)
+            };
+            found.push(Listed {
+                pid: info.UniqueProcessId.0 as usize as u32,
+                parent_pid: info.Reserved2 as usize as u32,
+                session: info.SessionId,
+                started_at_ms: ticks_to_unix_ms(field(CREATE_TIME_AT)),
+                name: listed_name(info, &list),
+                private_ws: field(PRIVATE_WS_AT),
+                ws: info.WorkingSetSize as u64,
+                commit: info.PagefileUsage as u64,
+            });
+            if info.NextEntryOffset == 0 {
+                break;
+            }
+            offset += info.NextEntryOffset as usize;
+        }
+        return Ok(found);
+    }
+    Err("NtQuerySystemInformation: the process list kept growing".into())
 }
 
 /// The FileDescription in an image's version resource.
@@ -341,8 +439,6 @@ fn window_owner(hwnd: HWND) -> u32 {
     pid
 }
 
-/// Builds snapshots. Keeps FileDescriptions by image path, so each image's
-/// version resource is read once.
 /// The process that owns the foreground window, if any. The Windows layer
 /// asks once a second (SPEC.md, Flags: focus).
 pub fn foreground_pid() -> Option<u32> {
@@ -411,81 +507,58 @@ impl Provider {
         let visible = &self.visible;
         let foreground_pid = foreground_pid();
 
-        // SAFETY: the snapshot handle is closed by `Handle`.
-        let snap = Handle(
-            unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
-                .map_err(|e| format!("CreateToolhelp32Snapshot: {e}"))?,
-        );
-        let mut entry = PROCESSENTRY32W {
-            dwSize: size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        let mut entries = Vec::new();
-        // SAFETY: `dwSize` is set; each call fills `entry`.
-        let mut more = unsafe { Process32FirstW(snap.0, &mut entry) }.is_ok();
-        while more {
-            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
-            // SAFETY: as above.
-            more = unsafe { Process32NextW(snap.0, &mut entry) }.is_ok();
-        }
-
+        let listed = process_list()?;
         // SAFETY: plain query.
         let self_pid = unsafe { GetCurrentProcessId() };
         // SAFETY: the pseudo handle of the current process needs no closing.
         let own_sid = owner_sid(unsafe { GetCurrentProcess() });
-        let mut processes = Vec::with_capacity(entries.len());
-        let mut ours: Vec<bool> = Vec::with_capacity(entries.len());
-        let mut private: Vec<Option<u64>> = Vec::with_capacity(entries.len());
-        let mut working: Vec<u64> = Vec::with_capacity(entries.len());
-        for (pid, parent_pid) in entries {
-            let mut session = 0u32;
-            // SAFETY: writes one u32; no handle needed.
-            if unsafe { ProcessIdToSessionId(pid, &mut session) }.is_err() {
-                session = 0;
-            }
-            let opened = open(pid);
+        let mut processes = Vec::with_capacity(listed.len());
+        let mut ours: Vec<bool> = Vec::with_capacity(listed.len());
+        for e in listed {
+            // Session 0 processes are always Staff, and services mostly
+            // refuse to open anyway: only the rest are opened.
+            let opened = if e.session != 0 { open(e.pid) } else { None };
             ours.push(
                 own_sid.is_some()
                     && opened.as_ref().and_then(|o| o.owner.as_ref()) == own_sid.as_ref(),
             );
             let path = opened.as_ref().and_then(|o| o.path.clone());
-            // Session 0 processes are always Staff and never named, so
-            // their version resources are not worth reading.
             let description = match &path {
-                Some(path) if session != 0 => self
+                Some(path) => self
                     .descriptions
                     .entry(path.clone())
                     .or_insert_with(|| file_description(path))
                     .clone(),
-                _ => None,
+                None => None,
             };
-            let counters = opened.as_ref().and_then(|o| o.counters.as_ref());
-            private.push(counters.map_or(Some(0), |c| c.private_ws));
-            working.push(counters.map_or(0, |c| c.ws));
+            let started_at_ms = if e.started_at_ms > 0 {
+                e.started_at_ms
+            } else {
+                opened.as_ref().map_or(0, |o| o.started_at_ms)
+            };
             processes.push(Process {
-                pid,
-                parent_pid,
-                started_at_ms: opened.as_ref().map_or(0, |o| o.started_at_ms),
-                session,
+                pid: e.pid,
+                parent_pid: e.parent_pid,
+                started_at_ms,
+                session: e.session,
                 image_path: path,
+                image_name: (!e.name.is_empty()).then_some(e.name),
                 description,
-                rent_bytes: 0,
-                lease_bytes: counters.map_or(0, |c| c.commit),
-                has_visible_window: visible.contains(&pid),
-                is_self: pid == self_pid,
+                rent_bytes: e.private_ws,
+                lease_bytes: e.commit,
+                working_set_bytes: e.ws,
+                has_visible_window: visible.contains(&e.pid),
+                is_self: e.pid == self_pid,
             });
         }
 
-        // Rent is the private working set. When the call fails, or every
-        // process reports 0 there (as under Wine), use the working set.
-        let estimate = private.iter().any(Option::is_none)
-            || !private.iter().any(|p| p.is_some_and(|v| v > 0));
-        for (k, process) in processes.iter_mut().enumerate() {
-            process.rent_bytes = if estimate {
-                working[k]
-            } else {
-                private[k].unwrap_or(0)
-            };
+        // Rent is the private working set. When every process reports 0
+        // there (as under Wine), use the working set, marked as estimated.
+        let estimate = !processes.iter().any(|p| p.rent_bytes > 0);
+        if estimate {
+            for process in &mut processes {
+                process.rent_bytes = process.working_set_bytes;
+            }
         }
 
         // Sign-in time: the start of the oldest process in our session that
@@ -514,6 +587,10 @@ impl Provider {
             foreground_pid,
             rent_is_estimate: estimate,
             processes,
+            physical_total_bytes: physical_total,
+            kernel_paged_bytes: perf.KernelPaged as u64 * page,
+            kernel_nonpaged_bytes: perf.KernelNonpaged as u64 * page,
+            system_cache_bytes: perf.SystemCache as u64 * page,
         })
     }
 }

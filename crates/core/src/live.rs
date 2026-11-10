@@ -125,6 +125,7 @@ mod tests {
             lease_bytes: mib * MIB,
             has_visible_window: true,
             is_self: false,
+            ..Default::default()
         };
         Snapshot {
             at_ms,

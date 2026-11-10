@@ -93,6 +93,7 @@ fn process(pid: u32, name: &str, started_at_ms: u64, mib: u64, window: bool) -> 
         lease_bytes: mib * MIB,
         has_visible_window: window,
         is_self: false,
+        ..Default::default()
     }
 }
 

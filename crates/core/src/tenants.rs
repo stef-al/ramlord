@@ -88,7 +88,7 @@ impl<'a> Grouper<'a> {
     fn hard_staff(&self, p: &Process) -> bool {
         p.is_self
             || p.session == 0
-            || match p.image_name() {
+            || match p.exe() {
                 None => true,
                 Some(name) => self.rules.is_staff(&name),
             }
@@ -121,7 +121,7 @@ impl<'a> Grouper<'a> {
         if self.hard_staff(p) {
             return Role::Staff;
         }
-        let name = p.image_name().unwrap_or_default();
+        let name = p.exe().unwrap_or_default();
         match self.rules.helper(&name).cloned() {
             Some(Helper::Parent) => {
                 if let Some(parent) = self.parent(p) {
@@ -144,9 +144,7 @@ impl<'a> Grouper<'a> {
             return Role::Staff;
         }
         if let Some(parent) = self.parent(p) {
-            let launcher = parent
-                .image_name()
-                .is_some_and(|n| self.rules.is_launcher(&n));
+            let launcher = parent.exe().is_some_and(|n| self.rules.is_launcher(&n));
             if !launcher && let Role::Root(root) = self.role(parent.pid) {
                 return Role::Root(root);
             }
@@ -162,12 +160,12 @@ impl<'a> Grouper<'a> {
             .by_pid
             .values()
             .copied()
-            .filter(|p| p.image_name().as_deref() == Some(owner))
+            .filter(|p| p.exe().as_deref() == Some(owner))
             .collect();
         candidates.sort_by_key(|p| (p.started_at_ms, p.pid));
         for candidate in candidates {
             if let Role::Root(root) = self.role(candidate.pid)
-                && self.by_pid[&root].image_name().as_deref() == Some(owner)
+                && self.by_pid[&root].exe().as_deref() == Some(owner)
             {
                 return Some(root);
             }
@@ -180,7 +178,7 @@ impl<'a> Grouper<'a> {
 /// else from the FileDescription without a leading company word, else
 /// from the file name.
 pub fn tenant_name(root: &Process, rules: &Rules) -> String {
-    let image = root.image_name().unwrap_or_default();
+    let image = root.exe().unwrap_or_default();
     if let Some(name) = rules.names.get(&image) {
         return name.clone();
     }

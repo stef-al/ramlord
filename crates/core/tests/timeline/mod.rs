@@ -149,6 +149,7 @@ pub fn expand(t: &Timeline) -> Vec<Event> {
                 lease_bytes: 100 * MIB,
                 has_visible_window: true,
                 is_self: false,
+                ..Default::default()
             },
             Process {
                 pid: 110,
@@ -161,6 +162,7 @@ pub fn expand(t: &Timeline) -> Vec<Event> {
                 lease_bytes: 20 * MIB,
                 has_visible_window: true,
                 is_self: true,
+                ..Default::default()
             },
         ];
         for (name, spec) in &step.tenants {
@@ -177,6 +179,7 @@ pub fn expand(t: &Timeline) -> Vec<Event> {
                 lease_bytes: rent,
                 has_visible_window: spec.window,
                 is_self: false,
+                ..Default::default()
             });
         }
         let capacity = t.capacity_mib * MIB;
@@ -190,6 +193,7 @@ pub fn expand(t: &Timeline) -> Vec<Event> {
             foreground_pid: step.focus.as_ref().and_then(|f| pids.get(f).copied()),
             rent_is_estimate: false,
             processes,
+            ..Default::default()
         }
     };
     for (index, step) in t.steps.iter().enumerate() {
