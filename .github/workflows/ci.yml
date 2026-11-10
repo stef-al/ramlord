@@ -19,7 +19,7 @@ jobs:
     name: linux (rungs 1 and 3)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Toolchain
         run: |
@@ -27,7 +27,7 @@ jobs:
           rustup default stable
           rustc --version
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -57,7 +57,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Toolchain
         run: |
@@ -65,7 +65,7 @@ jobs:
           rustup default stable
           rustc --version
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -79,7 +79,28 @@ jobs:
       - name: cargo test
         run: .github/scripts/step.sh cargo test --workspace --locked
 
+      - name: Render the sample building with the release exe
+        run: |
+          mkdir -p out
+          .github/scripts/step.sh target/release/ramlord.exe --building fixtures/sample-building.json \
+            --render out/sample-tower.png --card out/sample-rent-roll.png
+
+      - name: Same pixels as Linux
+        run: |
+          .github/scripts/step.sh cmp out/sample-tower.png fixtures/golden/sample-tower.png
+          .github/scripts/step.sh cmp out/sample-rent-roll.png fixtures/golden/sample-rent-roll.png
+          echo "::notice title=Golden images::the Windows exe drew both PNGs byte for byte as the Linux golden images"
+
       - name: Exe size
         run: |
           size=$(stat -c %s target/release/ramlord.exe)
           echo "::notice title=Exe size::ramlord.exe is ${size} bytes (budget 5 MB)"
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: ramlord-windows
+          path: |
+            target/release/ramlord.exe
+            out/*.png
+          if-no-files-found: warn
