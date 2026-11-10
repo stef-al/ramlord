@@ -180,16 +180,21 @@ pub fn tenant_name(root: &Process, rules: &Rules) -> String {
     if let Some(name) = rules.names.get(&image) {
         return name.clone();
     }
-    if let Some(description) = root.description.as_deref().map(str::trim)
-        && !description.is_empty()
-    {
-        let mut words = description.split_whitespace();
-        let first = words.next().unwrap_or_default();
-        let rest: Vec<&str> = words.collect();
+    // Trademark signs have no glyph and do not belong in a name.
+    let description = root
+        .description
+        .as_deref()
+        .map(|d| d.replace(['\u{ae}', '\u{2122}', '\u{a9}'], ""));
+    let words: Vec<&str> = description
+        .as_deref()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    if let Some((first, rest)) = words.split_first() {
         if !rest.is_empty() && rules.companies.contains(&first.to_lowercase()) {
             return rest.join(" ");
         }
-        return description.split_whitespace().collect::<Vec<_>>().join(" ");
+        return words.join(" ");
     }
     let stem = root
         .image_path
@@ -366,6 +371,21 @@ mod tests {
         );
         assert_eq!(name(Some(r"C:\x\a.exe"), Some("Microsoft")), "Microsoft");
         assert_eq!(name(Some(r"C:\x\paint.net.EXE"), None), "paint.net");
+        // Seen on the Windows runner: the sign hid the company word.
+        assert_eq!(
+            name(
+                Some(r"C:\x\vctip.exe"),
+                Some("Microsoft\u{ae} VC compiler and tools")
+            ),
+            "VC compiler and tools"
+        );
+        assert_eq!(
+            name(
+                Some(r"C:\x\igcc.exe"),
+                Some("Intel\u{ae} Graphics\u{2122} Command Center")
+            ),
+            "Graphics Command Center"
+        );
         assert_eq!(name(Some(r"C:\x\tool"), Some("")), "tool");
     }
 }
