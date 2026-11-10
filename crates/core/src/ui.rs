@@ -198,6 +198,17 @@ impl Eviction {
     }
 
     /// The dialog's buttons, primary (Enter) first.
+    /// The keys the dialog answers, as its hint line says them.
+    pub fn keys(&self) -> &'static str {
+        match self {
+            Eviction::Refused { .. } => "ESC LEAVES, DEL FORCES",
+            Eviction::Confirm { .. } | Eviction::Lawyer { .. } | Eviction::Done { .. } => {
+                "ENTER OR ESC"
+            }
+            _ => "",
+        }
+    }
+
     pub fn buttons(&self) -> &'static [Target] {
         match self {
             Eviction::Confirm { .. } => &[Target::CloseIt, Target::Cancel],
@@ -369,7 +380,11 @@ impl Ui {
             let button = match input {
                 Input::Click { x, y } => hit(cx.regions, x, y).filter(|t| buttons.contains(t)),
                 Input::Key(Key::Enter) => buttons.first().copied(),
-                Input::Key(Key::Escape) => buttons.last().copied(),
+                // Esc is always the way out that changes nothing.
+                Input::Key(Key::Escape) => buttons
+                    .iter()
+                    .copied()
+                    .find(|t| matches!(t, Target::Cancel | Target::Leave | Target::Ok)),
                 Input::Key(Key::Delete) if buttons.contains(&Target::Force) => Some(Target::Force),
                 Input::Key(_) => None,
             };
@@ -826,6 +841,19 @@ mod tests {
         key(&mut ui, &w, Key::Down);
         key(&mut ui, &w, Key::Delete);
         assert!(key(&mut ui, &w, Key::Escape).is_empty());
+        assert_eq!(ui.eviction, Eviction::Idle);
+        // Esc never forces: at the refusal it leaves the tenant be.
+        key(&mut ui, &w, Key::Delete);
+        key(&mut ui, &w, Key::Enter);
+        ui.poll(&[10], 6_000);
+        assert!(matches!(ui.eviction, Eviction::Refused { .. }));
+        assert!(key(&mut ui, &w, Key::Escape).is_empty());
+        assert_eq!(ui.eviction, Eviction::Idle);
+        // Enter leaves it be too; only Delete or the button forces.
+        key(&mut ui, &w, Key::Delete);
+        key(&mut ui, &w, Key::Enter);
+        ui.poll(&[10], 6_000);
+        assert!(key(&mut ui, &w, Key::Enter).is_empty());
         assert_eq!(ui.eviction, Eviction::Idle);
         // Family on: Delete does nothing; off again: it asks.
         ui.input(Input::Click { x: 5, y: 5 }, &w.cx(0));

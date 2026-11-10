@@ -954,8 +954,8 @@ fn dialog_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, eviction: &Evictio
         let (text, color) = label(target);
         button(d, regions, (x0, x1), 186, text, color, Some(target));
     }
-    if !buttons.is_empty() {
-        d.push(Draw::text(lx0 + 5, 172, "ENTER OR ESC", TEXT_DIM));
+    if !eviction.keys().is_empty() {
+        d.push(Draw::text(lx0 + 5, 172, eviction.keys(), TEXT_DIM));
     }
 }
 
