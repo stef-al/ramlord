@@ -91,10 +91,35 @@ jobs:
           .github/scripts/step.sh cmp out/sample-rent-roll.png fixtures/golden/sample-rent-roll.png
           echo "::notice title=Golden images::the Windows exe drew both PNGs byte for byte as the Linux golden images"
 
-      - name: Exe size
+      - name: Self-test (budgets)
         run: |
-          size=$(stat -c %s target/release/ramlord.exe)
-          echo "::notice title=Exe size::ramlord.exe is ${size} bytes (budget 5 MB)"
+          # The exe is a GUI program: it reports through the JSON file and its
+          # exit code. Show the report so a failure annotation carries it.
+          .github/scripts/step.sh bash -c 'target/release/ramlord.exe --self-test out/self-test.json; code=$?; cat out/self-test.json; exit $code'
+
+      - name: Report the budgets
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path out/self-test.json) {
+            $report = Get-Content out/self-test.json -Raw | ConvertFrom-Json
+            foreach ($b in $report.budgets) {
+              $verdict = if ($b.pass) { "pass" } else { "FAIL" }
+              Write-Output "::notice title=Budget: $($b.name)::$($b.value) of $($b.limit) $($b.unit) ($verdict)"
+            }
+            Write-Output "::notice title=Self-test::$($report.samples) samples, $($report.processes) processes, $($report.tenants) tenants, snapshots (us): $($report.snapshot_us -join ' '), frames (us): $($report.frame_us -join ' '), estimate: $($report.rent_is_estimate)"
+          }
+
+      - name: Dump a live snapshot
+        run: .github/scripts/step.sh target/release/ramlord.exe --dump out/dump.json
+
+      - name: Check the dump
+        run: RAMLORD_DUMP=out/dump.json .github/scripts/step.sh cargo test -p ramlord-core --test live_dump --locked -- --nocapture
+
+      - name: Render the dump
+        run: |
+          .github/scripts/step.sh target/release/ramlord.exe --snapshot out/dump.json \
+            --render out/dump-tower.png --card out/dump-rent-roll.png
 
       - uses: actions/upload-artifact@v6
         if: always()
@@ -103,4 +128,5 @@ jobs:
           path: |
             target/release/ramlord.exe
             out/*.png
+            out/*.json
           if-no-files-found: warn
