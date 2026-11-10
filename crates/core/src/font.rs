@@ -368,7 +368,7 @@ pub fn glyph(c: char) -> &'static Glyph {
         '\u{2019}' | '\u{2018}' => '\'',
         '\u{b7}' => MIDDLE_DOT,
         '\u{2191}' => UP_ARROW,
-        other => other.to_ascii_uppercase(),
+        other => fold(other).to_ascii_uppercase(),
     };
     GLYPHS
         .iter()
@@ -376,6 +376,47 @@ pub fn glyph(c: char) -> &'static Glyph {
         .or_else(|| GLYPHS.iter().find(|(k, _)| *k == '?'))
         .map(|(_, g)| g)
         .expect("the font has a ? glyph")
+}
+
+/// Latin letters with accents, and the base letter each is drawn as.
+/// Covers Latin-1 and Latin Extended-A, so names such as "Správce úloh"
+/// draw as SPRAVCE ULOH rather than with question marks.
+const FOLDS: [(&str, char); 24] = [
+    ("ÀÁÂÃÄÅàáâãäåĀāĂăĄą", 'A'),
+    ("ÇçĆćĈĉĊċČč", 'C'),
+    ("ĎďĐđÐð", 'D'),
+    ("ÈÉÊËèéêëĒēĔĕĖėĘęĚě", 'E'),
+    ("ĜĝĞğĠġĢģ", 'G'),
+    ("ĤĥĦħ", 'H'),
+    ("ÌÍÎÏìíîïĨĩĪīĬĭĮįİı", 'I'),
+    ("Ĵĵ", 'J'),
+    ("Ķķĸ", 'K'),
+    ("ĹĺĻļĽľĿŀŁł", 'L'),
+    ("ÑñŃńŅņŇňŉŊŋ", 'N'),
+    ("ÒÓÔÕÖØòóôõöøŌōŎŏŐő", 'O'),
+    ("ŔŕŖŗŘř", 'R'),
+    ("ŚśŜŝŞşŠšß", 'S'),
+    ("ŢţŤťŦŧ", 'T'),
+    ("ÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲų", 'U'),
+    ("Ŵŵ", 'W'),
+    ("ÝýÿŶŷŸ", 'Y'),
+    ("ŹźŻżŽž", 'Z'),
+    ("Ææ", 'A'),
+    ("Œœ", 'O'),
+    ("Þþ", 'P'),
+    ("×", 'X'),
+    ("÷", '/'),
+];
+
+/// The letter an accented Latin letter is drawn as; anything else as is.
+pub fn fold(c: char) -> char {
+    if c.is_ascii() {
+        return c;
+    }
+    FOLDS
+        .iter()
+        .find(|(set, _)| set.contains(c))
+        .map_or(c, |&(_, base)| base)
 }
 
 /// Width in pixels of `chars` characters at `scale`, from the first glyph's
@@ -416,6 +457,32 @@ mod tests {
         assert_eq!(glyph('\u{2019}'), glyph('\''));
         assert_eq!(glyph('€'), glyph('?'));
         assert_eq!(glyph('#'), glyph('?'));
+    }
+
+    #[test]
+    fn accented_letters_draw_as_their_base_letter() {
+        // Seen on a Czech Windows: Task Manager is "Správce úloh".
+        let drawn: String = "Správce úloh"
+            .chars()
+            .map(|c| fold(c).to_ascii_uppercase())
+            .collect();
+        assert_eq!(drawn, "SPRAVCE ULOH");
+        assert_eq!(glyph('Á'), glyph('A'));
+        assert_eq!(glyph('ů'), glyph('U'));
+        assert_eq!(glyph('ž'), glyph('Z'));
+        assert_eq!(glyph('ß'), glyph('S'));
+        assert_eq!(glyph('ł'), glyph('L'));
+        // Outside Latin it is still a question mark.
+        assert_eq!(glyph('Ж'), glyph('?'));
+        assert_eq!(glyph('中'), glyph('?'));
+    }
+
+    #[test]
+    fn every_folded_letter_lands_on_a_glyph() {
+        for (set, base) in FOLDS {
+            assert!(GLYPHS.iter().any(|(k, _)| *k == base), "{base}");
+            assert!(set.chars().all(|c| !c.is_ascii()), "{set}");
+        }
     }
 
     #[test]
