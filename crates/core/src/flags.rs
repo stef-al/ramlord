@@ -224,6 +224,11 @@ impl Watch {
         }
     }
 
+    /// The user's Family list; its tenants are never flagged.
+    pub fn set_family(&mut self, family: BTreeSet<String>) {
+        self.family = family;
+    }
+
     /// The away threshold, 1 hour to 7 days (a setting from M5).
     pub fn set_away_ms(&mut self, away_ms: u64) {
         self.away_ms = away_ms.clamp(HOUR, 7 * DAY);

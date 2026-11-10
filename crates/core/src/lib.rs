@@ -31,6 +31,7 @@ pub mod scene;
 pub mod smooth;
 pub mod snapshot;
 pub mod tenants;
+pub mod ui;
 
 pub use building::{Building, BuildingError, Flag, Price, Tenant};
 pub use layout::{HueBook, Layout};

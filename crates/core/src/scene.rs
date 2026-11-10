@@ -9,6 +9,7 @@ use crate::format::{Shown, cut, gb_text, micros, price_text, whole_gb, whole_mb,
 use crate::layout::{COLS, FLOORS, Layout, Owner};
 use crate::palette::*;
 use crate::render::Draw;
+use crate::ui::{Eviction, Region, Target};
 
 /// The tower canvas.
 pub const WIDTH: u32 = 384;
@@ -195,7 +196,78 @@ pub fn tower_highlighting(
     layout: &Layout,
     highlight: Option<usize>,
 ) -> Vec<Draw> {
+    window(building, layout, highlight, None, &Panel::Roll).0
+}
+
+/// What the right-hand panel shows.
+pub enum Panel<'a> {
+    Roll,
+    Details(&'a Details),
+    Dialog(&'a Eviction),
+}
+
+/// The whole window: the building, the selected tenant outlined in white,
+/// and the panel. Returns the draw list and the clickable regions.
+pub fn window(
+    building: &Building,
+    layout: &Layout,
+    highlight: Option<usize>,
+    selected: Option<usize>,
+    panel: &Panel,
+) -> (Vec<Draw>, Vec<Region>) {
     let mut d = Vec::new();
+    let mut regions = Vec::new();
+    building_scene(&mut d, building, layout, highlight);
+    // Every unit and box of a tenant selects it.
+    for (index, &owner) in layout.cells.iter().enumerate() {
+        let tenant = match owner {
+            Owner::Tenant(t) | Owner::Boxes(Some(t)) => t,
+            _ => continue,
+        };
+        let (x, y) = cell_xy(index / COLS, index % COLS);
+        regions.push(Region {
+            x0: x,
+            y0: y,
+            x1: x + CELL_W - 1,
+            y1: y + CELL_H - 1,
+            target: Target::Tenant(tenant),
+        });
+    }
+    if let Some(tenant) = selected
+        && highlight != Some(tenant)
+    {
+        outline_owner(&mut d, layout, Owner::Tenant(tenant), TEXT);
+    }
+    // The two key hints can be clicked.
+    let hints_x = 376 - crate::font::text_width(25, 1) + 1;
+    regions.push(Region {
+        x0: hints_x - 2,
+        y0: 217,
+        x1: hints_x + 12 * ADVANCE,
+        y1: 227,
+        target: Target::RentRollCard,
+    });
+    regions.push(Region {
+        x0: hints_x + 14 * ADVANCE - 2,
+        y0: 217,
+        x1: 377,
+        y1: 227,
+        target: Target::Settings,
+    });
+    match panel {
+        Panel::Roll => rent_roll_panel(&mut d, &mut regions, building, layout, selected),
+        Panel::Details(details) => details_panel(&mut d, &mut regions, building, layout, details),
+        Panel::Dialog(eviction) => dialog_panel(&mut d, &mut regions, eviction),
+    }
+    (d, regions)
+}
+
+fn building_scene(
+    d: &mut Vec<Draw>,
+    building: &Building,
+    layout: &Layout,
+    highlight: Option<usize>,
+) {
     let w = WIDTH as i32;
     let h = HEIGHT as i32;
     d.push(Draw::rect(0, 120, w - 1, h - 1, SKY_LOW));
@@ -352,7 +424,7 @@ pub fn tower_highlighting(
     d.push(Draw::rect(gx1, GRID_Y - 1, gx1, bottom, OUTLINE));
 
     if let Some(tenant) = highlight {
-        outline_owner(&mut d, layout, Owner::Tenant(tenant), GOLD);
+        outline_owner(d, layout, Owner::Tenant(tenant), GOLD);
     }
 
     // Labels: NAME $RENT or NAME, a red up arrow after a leaker's.
@@ -431,9 +503,6 @@ pub fn tower_highlighting(
         1,
     ));
     d.push(Draw::text(12, 230, cut(&building.remark, REMARK_MAX), TEXT));
-
-    rent_roll_panel(&mut d, building, layout);
-    d
 }
 
 /// Outlines every edge between `owner`'s units and anyone else's, on the
@@ -474,7 +543,13 @@ fn outline_owner(d: &mut Vec<Draw>, layout: &Layout, owner: Owner, color: Rgb) {
 }
 
 /// The rent roll panel: 224, 10, 154 by 204.
-fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
+fn rent_roll_panel(
+    d: &mut Vec<Draw>,
+    regions: &mut Vec<Region>,
+    building: &Building,
+    layout: &Layout,
+    selected: Option<usize>,
+) {
     let symbol = building.price.symbol.as_str();
     let estimate = building.rent_is_estimate;
     // The rent column holds four characters.
@@ -506,6 +581,16 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
     let roll = Roll::new(building, layout);
     let mut y = 51;
     for row in &roll.rows {
+        if selected == Some(row.tenant) {
+            d.push(Draw::rect(lx0 + 2, y - 2, lx1 - 2, y + 7, PANEL_LINE));
+        }
+        regions.push(Region {
+            x0: lx0 + 1,
+            y0: y - 2,
+            x1: lx1 - 1,
+            y1: y + 7,
+            target: Target::Tenant(row.tenant),
+        });
         d.push(Draw::rect(
             lx0 + 5,
             y,
@@ -623,6 +708,257 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
         TEXT_DIM,
         1,
     ));
+}
+
+/// Everything the details card shows besides the tenant itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Details {
+    /// Index into `Building::tenants`.
+    pub tenant: usize,
+    pub peak_bytes: u64,
+    /// Rent an hour of watched time ago, once there is an hour of history.
+    pub hour_ago_bytes: Option<u64>,
+    /// Wall time since its oldest process started.
+    pub moved_in_ms: Option<u64>,
+    /// Watched time since it last had focus; None if it never had.
+    pub last_visit_ms: Option<u64>,
+    /// Rent at the end of each five-minute bucket of the last watched
+    /// hour, oldest first: at most 12.
+    pub history: Vec<u64>,
+    /// On the user's Family list.
+    pub family: bool,
+}
+
+/// "JUST NOW", "5 MIN", "3 H", "2 D".
+pub fn span_text(ms: u64) -> String {
+    const MIN: u64 = 60_000;
+    match ms {
+        m if m < MIN => "JUST NOW".into(),
+        m if m < 60 * MIN => format!("{} MIN", m / MIN),
+        m if m < 48 * 60 * MIN => format!("{} H", m / (60 * MIN)),
+        m => format!("{} D", m / (24 * 60 * MIN)),
+    }
+}
+
+/// A tenant's flags in words, such as "LEAKING, NOT HOME".
+pub fn flags_in_words(tenant: &Tenant, family: bool) -> String {
+    let mut words = Vec::new();
+    if family || tenant.has(Flag::Family) {
+        words.push("FAMILY");
+    }
+    for (flag, word) in [
+        (Flag::Leaker, "LEAKING"),
+        (Flag::Squatter, "SQUATTING"),
+        (Flag::Away, "NOT HOME"),
+        (Flag::Walls, "IN THE WALLS"),
+    ] {
+        if tenant.has(flag) {
+            words.push(word);
+        }
+    }
+    if words.is_empty() {
+        "NO COMPLAINTS".into()
+    } else {
+        cut(&words.join(", "), 24)
+    }
+}
+
+const BUTTON_H: i32 = 12;
+
+fn button(
+    d: &mut Vec<Draw>,
+    regions: &mut Vec<Region>,
+    (x0, x1): (i32, i32),
+    y0: i32,
+    label: &str,
+    color: Rgb,
+    target: Option<Target>,
+) {
+    d.push(Draw::rect(x0, y0, x1, y0 + BUTTON_H - 1, PANEL_LINE));
+    d.push(Draw::rect(x0 + 1, y0 + 1, x1 - 1, y0 + BUTTON_H - 2, PANEL));
+    d.push(Draw::text_center(x0, x1, y0 + 3, label, color, 1));
+    if let Some(target) = target {
+        regions.push(Region {
+            x0,
+            y0,
+            x1,
+            y1: y0 + BUTTON_H - 1,
+            target,
+        });
+    }
+}
+
+/// The panel frame shared by the card, the dialog and the rent roll.
+fn panel_frame(d: &mut Vec<Draw>) -> (i32, i32) {
+    let (lx0, lx1) = (224, 377);
+    d.push(Draw::rect(lx0, 10, lx1, 213, PANEL_LINE));
+    d.push(Draw::rect(lx0 + 1, 11, lx1 - 1, 212, PANEL));
+    (lx0, lx1)
+}
+
+/// The details card (SPEC.md, The details card), in the rent roll's panel.
+fn details_panel(
+    d: &mut Vec<Draw>,
+    regions: &mut Vec<Region>,
+    building: &Building,
+    layout: &Layout,
+    details: &Details,
+) {
+    let (lx0, lx1) = panel_frame(d);
+    let tenant = &building.tenants[details.tenant];
+    let symbol = building.price.symbol.as_str();
+    let estimate = building.rent_is_estimate;
+    let money = |bytes| {
+        Shown::rent(micros(bytes, building.price.per_gb_micros)).fit(symbol, estimate, None)
+    };
+    let hue = layout.hue_of(details.tenant).map(|h| HUES[usize::from(h)]);
+
+    // Top: name, flags in words, rent now.
+    if let Some(hue) = hue {
+        d.push(Draw::rect(lx0 + 5, 15, lx0 + 9, 21, hue.wall));
+    }
+    d.push(Draw::text(
+        lx0 + 13,
+        15,
+        cut(&tenant.name.to_uppercase(), crate::ui::NAME_CHARS),
+        GOLD,
+    ));
+    let flagged = tenant.flags.iter().any(|f| *f != Flag::Family);
+    d.push(Draw::text(
+        lx0 + 5,
+        26,
+        flags_in_words(tenant, details.family),
+        if flagged { ALERT } else { TEXT_DIM },
+    ));
+    d.push(Draw::text(
+        lx0 + 5,
+        37,
+        format!("{} GB", gb_text(tenant.rent_bytes)),
+        TEXT,
+    ));
+    d.push(Draw::text_right(
+        lx1 - 5,
+        37,
+        money(tenant.rent_bytes),
+        TEXT,
+        1,
+    ));
+    d.push(Draw::rect(lx0 + 4, 47, lx1 - 4, 47, PANEL_LINE));
+
+    // Numbers.
+    let gb = |bytes: u64| format!("{} GB", gb_text(bytes));
+    let rows = [
+        ("LEASE", gb(tenant.lease_bytes)),
+        ("PEAK", gb(details.peak_bytes.max(tenant.rent_bytes))),
+        ("AN HOUR AGO", details.hour_ago_bytes.map_or("-".into(), gb)),
+        ("PACKED", gb(tenant.packed_bytes)),
+        ("PROCESSES", tenant.process_count.to_string()),
+        (
+            "MOVED IN",
+            details
+                .moved_in_ms
+                .map_or("-".into(), |ms| format!("{} AGO", span_text(ms))),
+        ),
+        (
+            "LAST VISIT",
+            details
+                .last_visit_ms
+                .map_or("NEVER".into(), |ms| match span_text(ms).as_str() {
+                    "JUST NOW" => "JUST NOW".to_string(),
+                    span => format!("{span} AGO"),
+                }),
+        ),
+    ];
+    let mut y = 51;
+    for (label, value) in rows {
+        d.push(Draw::text(lx0 + 5, y, label, TEXT_DIM));
+        d.push(Draw::text_right(lx1 - 5, y, value, TEXT, 1));
+        y += 10;
+    }
+    d.push(Draw::rect(lx0 + 4, 121, lx1 - 4, 121, PANEL_LINE));
+
+    // History: the last watched hour in five-minute bars, newest right.
+    d.push(Draw::text(lx0 + 5, 125, "LAST HOUR", TEXT_DIM));
+    let top = details
+        .history
+        .iter()
+        .copied()
+        .chain([tenant.rent_bytes])
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let bar_color = hue.map_or(OTHERS_WALL, |h| h.wall);
+    let base = 163;
+    let slots = 12usize;
+    let first = slots.saturating_sub(details.history.len());
+    for (k, &value) in details.history.iter().rev().take(slots).rev().enumerate() {
+        let x = lx0 + 5 + (first + k) as i32 * 12;
+        let height = (u128::from(value) * 26 / u128::from(top)) as i32;
+        d.push(Draw::rect(x, base - height, x + 9, base, bar_color));
+    }
+    d.push(Draw::rect(lx0 + 4, base + 1, lx1 - 4, base + 1, PANEL_LINE));
+
+    // Actions. Family cannot be evicted.
+    let family = details.family || tenant.has(Flag::Family);
+    let (left, right) = ((lx0 + 5, lx0 + 74), (lx0 + 79, lx1 - 5));
+    button(
+        d,
+        regions,
+        left,
+        170,
+        "EVICT",
+        if family { TEXT_DIM } else { ALERT },
+        (!family).then_some(Target::Evict),
+    );
+    let label = if details.family {
+        "FAMILY ON"
+    } else {
+        "FAMILY OFF"
+    };
+    button(d, regions, right, 170, label, TEXT, Some(Target::Family));
+    if tenant.has(Flag::Squatter) {
+        button(
+            d,
+            regions,
+            left,
+            186,
+            "STARTUP",
+            GOLD,
+            Some(Target::Startup),
+        );
+    }
+    button(d, regions, right, 186, "BACK", TEXT, Some(Target::Back));
+}
+
+/// The eviction dialog, in the rent roll's panel.
+fn dialog_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, eviction: &Eviction) {
+    let (lx0, lx1) = panel_frame(d);
+    d.push(Draw::text(lx0 + 5, 15, "EVICTION", GOLD));
+    d.push(Draw::rect(lx0 + 4, 25, lx1 - 4, 25, PANEL_LINE));
+    let mut y = 32;
+    for line in eviction.lines(24) {
+        d.push(Draw::text(lx0 + 5, y, line, TEXT));
+        y += 10;
+    }
+    let label = |t: Target| match t {
+        Target::CloseIt => ("CLOSE IT", ALERT),
+        Target::Cancel => ("CANCEL", TEXT),
+        Target::Force => ("FORCE EVICT", ALERT),
+        Target::Leave => ("LEAVE IT", TEXT),
+        _ => ("OK", TEXT),
+    };
+    let buttons = eviction.buttons();
+    let spots = [(lx0 + 5, lx0 + 74), (lx0 + 79, lx1 - 5)];
+    // One button sits on the right; two fill the row, primary first.
+    let start = spots.len() - buttons.len().min(spots.len());
+    for (k, &target) in buttons.iter().enumerate() {
+        let (x0, x1) = spots[start + k];
+        let (text, color) = label(target);
+        button(d, regions, (x0, x1), 186, text, color, Some(target));
+    }
+    if !buttons.is_empty() {
+        d.push(Draw::text(lx0 + 5, 172, "ENTER OR ESC", TEXT_DIM));
+    }
 }
 
 /// One line of the card, top to bottom.
