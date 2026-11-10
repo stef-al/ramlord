@@ -20,6 +20,11 @@ shift 2
 # Boot the prefix first; the first run takes under a minute.
 wineboot -i >/dev/null 2>&1
 
+# The close button quits rather than hiding to the tray, so the run can
+# end with WM_CLOSE (SPEC.md, Settings: Close button).
+. "$(dirname "$0")/wine-settings.sh"
+wine_settings '{"close_quits": true, "fetch_prices": false}'
+
 for program in ${WINE_ALSO:-}; do
   wine "$program" >/dev/null 2>&1 &
 done

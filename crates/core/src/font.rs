@@ -15,7 +15,7 @@ pub const MIDDLE_DOT: char = '|';
 
 pub type Glyph = [u8; 7];
 
-const GLYPHS: [(char, Glyph); 60] = [
+const GLYPHS: [(char, Glyph); 61] = [
     (
         'A',
         [
@@ -358,6 +358,12 @@ const GLYPHS: [(char, Glyph); 60] = [
             0b00000, 0b00000, 0b01000, 0b10101, 0b00010, 0b00000, 0b00000,
         ],
     ), // marks an estimate
+    (
+        ';',
+        [
+            0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b00100, 0b01000,
+        ],
+    ),
     // Currency symbols a custom price may use (M5).
     (
         '\u{20ac}',

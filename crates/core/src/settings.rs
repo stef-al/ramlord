@@ -334,6 +334,20 @@ mod tests {
     }
 
     #[test]
+    fn every_label_value_and_help_line_draws_without_question_marks() {
+        let unknown = crate::font::glyph('?');
+        let s = Settings::default();
+        for row in ROWS {
+            let value = s.value_text(row, Some(MemoryType::Ddr5), "$14.34");
+            for text in [row.label(), value.as_str(), row.help()[0], row.help()[1]] {
+                for c in text.chars().filter(|&c| c != '?' && c != ' ') {
+                    assert_ne!(crate::font::glyph(c), unknown, "{c:?} in {text}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn typed_prices_with_symbols_before_or_after() {
         let p = |t: &str| parse_custom_price(t, "$", "2026-11-10");
         let price = |t: &str| p(t).unwrap().unwrap();

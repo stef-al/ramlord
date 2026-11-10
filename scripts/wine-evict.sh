@@ -26,6 +26,11 @@ mkdir -p "$OUT"
 
 wineboot -i >/dev/null 2>&1
 
+# The close button quits rather than hiding to the tray, so the run can
+# end with WM_CLOSE (SPEC.md, Settings: Close button).
+. "$(dirname "$0")/wine-settings.sh"
+wine_settings '{"close_quits": true, "fetch_prices": false}'
+
 # A tenant needs half a unit to get its own row: 32 MB when Wine reports
 # 16 GB. Notepad keeps a file as UTF-16, so 24 MB of text is about 48 MB.
 BIG="${WINEPREFIX:?}/drive_c/ramlord-big.txt"
