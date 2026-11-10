@@ -28,6 +28,7 @@ pub mod remarks;
 pub mod render;
 pub mod rules;
 pub mod scene;
+pub mod smbios;
 pub mod smooth;
 pub mod snapshot;
 pub mod tenants;
