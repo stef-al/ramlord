@@ -1,0 +1,7 @@
+{
+  "as_of": "2026-11-03",
+  "currency": "USD",
+  "symbol": "$",
+  "basis": "cheapest common 32 GB (2x16) kit, US retail, per GB",
+  "per_gb": { "DDR5": 14.34, "DDR4": 6.53 }
+}

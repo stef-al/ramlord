@@ -1,0 +1,34 @@
+# How processes become tenants (SPEC.md, "From processes to tenants").
+# These lists are a starting point; grow them from real snapshots.
+
+staff = ["explorer.exe", "dwm.exe", "sihost.exe", "ctfmon.exe", "taskhostw.exe",
+  "runtimebroker.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
+  "searchhost.exe", "textinputhost.exe", "applicationframehost.exe", "dllhost.exe",
+  "backgroundtaskhost.exe", "fontdrvhost.exe", "securityhealthsystray.exe",
+  "smartscreen.exe", "lockapp.exe"]
+
+launchers = ["cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe", "wsl.exe",
+  "bash.exe", "steam.exe", "epicgameslauncher.exe", "galaxyclient.exe",
+  "battle.net.exe", "eadesktop.exe", "upc.exe", "riotclientservices.exe"]
+
+[helpers]
+"msedgewebview2.exe" = "parent"
+"crashpad_handler.exe" = "parent"
+"conhost.exe" = "parent"
+"openconsole.exe" = "parent"
+"steamwebhelper.exe" = "steam.exe"
+"steamservice.exe" = "steam.exe"
+"gameoverlayui.exe" = "steam.exe"
+
+[names]
+"chrome.exe" = "Chrome"
+"msedge.exe" = "Edge"
+"firefox.exe" = "Firefox"
+"code.exe" = "VS Code"
+"ms-teams.exe" = "Teams"
+"discord.exe" = "Discord"
+"slack.exe" = "Slack"
+"spotify.exe" = "Spotify"
+"steam.exe" = "Steam"
+"onedrive.exe" = "OneDrive"
+"windowsterminal.exe" = "Terminal"

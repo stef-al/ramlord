@@ -1,0 +1,7 @@
+# The Windows exe links the C runtime statically, so it runs on a PC
+# without the Visual C++ runtime (SPEC.md, CI and releases).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
