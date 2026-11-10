@@ -8,6 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ramlord_core::snapshot::{Process, Snapshot};
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+use windows::Win32::Security::{
+    GetLengthSid, GetTokenInformation, IsValidSid, TOKEN_QUERY, TOKEN_USER, TokenUser,
+};
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
@@ -21,8 +24,8 @@ use windows::Win32::System::ProcessStatus::{
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::SystemInformation::GetPhysicallyInstalledSystemMemory;
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow,
@@ -120,6 +123,47 @@ struct Opened {
     path: Option<String>,
     started_at_ms: u64,
     counters: Option<Counters>,
+    /// The SID of the user the process runs as, if it can be read.
+    owner: Option<Vec<u8>>,
+}
+
+/// The SID, as bytes, of the user `process` runs as. Compared, never
+/// stored: a snapshot holds no user names or SIDs.
+fn owner_sid(process: HANDLE) -> Option<Vec<u8>> {
+    let mut token = HANDLE::default();
+    // SAFETY: on success `token` is a handle we own, closed by `Handle`.
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) }.ok()?;
+    let token = Handle(token);
+    let mut len = 0u32;
+    // SAFETY: a size query; it fails with the size needed.
+    let _ = unsafe { GetTokenInformation(token.0, TokenUser, None, 0, &mut len) };
+    if len == 0 {
+        return None;
+    }
+    // u64 words keep the TOKEN_USER aligned.
+    let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+    // SAFETY: `buf` holds at least `len` bytes.
+    unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            Some(buf.as_mut_ptr().cast()),
+            len,
+            &mut len,
+        )
+    }
+    .ok()?;
+    // SAFETY: the call filled a TOKEN_USER whose SID points into `buf`;
+    // the SID's length is checked before its bytes are copied.
+    unsafe {
+        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let sid = user.User.Sid;
+        if !IsValidSid(sid).as_bool() {
+            return None;
+        }
+        let n = GetLengthSid(sid) as usize;
+        Some(std::slice::from_raw_parts(sid.0 as *const u8, n).to_vec())
+    }
 }
 
 fn open(pid: u32) -> Option<Opened> {
@@ -151,6 +195,7 @@ fn open(pid: u32) -> Option<Opened> {
         path,
         started_at_ms,
         counters: counters(handle.0),
+        owner: owner_sid(handle.0),
     })
 }
 
@@ -298,14 +343,31 @@ fn window_owner(hwnd: HWND) -> u32 {
 
 /// Builds snapshots. Keeps FileDescriptions by image path, so each image's
 /// version resource is read once.
+/// The process that owns the foreground window, if any. The Windows layer
+/// asks once a second (SPEC.md, Flags: focus).
+pub fn foreground_pid() -> Option<u32> {
+    // SAFETY: plain query.
+    let foreground = unsafe { GetForegroundWindow() };
+    (!foreground.is_invalid()).then(|| window_owner(foreground))
+}
+
+/// Visible windows are enumerated every 5 seconds (SPEC.md, Timing).
+const WINDOWS_EVERY_MS: u64 = 5_000;
+
+/// Builds snapshots. Keeps FileDescriptions by image path, so each image's
+/// version resource is read once, and the visible windows for 5 seconds.
 pub struct Provider {
     descriptions: HashMap<String, Option<String>>,
+    visible: BTreeSet<u32>,
+    windows_at_ms: Option<u64>,
 }
 
 impl Provider {
     pub fn new() -> Provider {
         Provider {
             descriptions: HashMap::new(),
+            visible: BTreeSet::new(),
+            windows_at_ms: None,
         }
     }
 
@@ -334,15 +396,20 @@ impl Provider {
         // as Staff. If the call fails or reports less, use PhysicalTotal.
         let capacity = installed.max(physical_total);
 
-        // Windows first, so `has_visible_window` describes this moment.
-        let visible: BTreeSet<u32> = windows_of(None)
-            .into_iter()
-            .filter(|&w| is_app_window(w))
-            .map(window_owner)
-            .collect();
-        // SAFETY: plain query.
-        let foreground = unsafe { GetForegroundWindow() };
-        let foreground_pid = (!foreground.is_invalid()).then(|| window_owner(foreground));
+        // Visible windows every 5 seconds; the foreground at every sample.
+        let stale = self
+            .windows_at_ms
+            .is_none_or(|t| at_ms < t || at_ms - t >= WINDOWS_EVERY_MS);
+        if stale {
+            self.visible = windows_of(None)
+                .into_iter()
+                .filter(|&w| is_app_window(w))
+                .map(window_owner)
+                .collect();
+            self.windows_at_ms = Some(at_ms);
+        }
+        let visible = &self.visible;
+        let foreground_pid = foreground_pid();
 
         // SAFETY: the snapshot handle is closed by `Handle`.
         let snap = Handle(
@@ -364,7 +431,10 @@ impl Provider {
 
         // SAFETY: plain query.
         let self_pid = unsafe { GetCurrentProcessId() };
+        // SAFETY: the pseudo handle of the current process needs no closing.
+        let own_sid = owner_sid(unsafe { GetCurrentProcess() });
         let mut processes = Vec::with_capacity(entries.len());
+        let mut ours: Vec<bool> = Vec::with_capacity(entries.len());
         let mut private: Vec<Option<u64>> = Vec::with_capacity(entries.len());
         let mut working: Vec<u64> = Vec::with_capacity(entries.len());
         for (pid, parent_pid) in entries {
@@ -374,6 +444,10 @@ impl Provider {
                 session = 0;
             }
             let opened = open(pid);
+            ours.push(
+                own_sid.is_some()
+                    && opened.as_ref().and_then(|o| o.owner.as_ref()) == own_sid.as_ref(),
+            );
             let path = opened.as_ref().and_then(|o| o.path.clone());
             // Session 0 processes are always Staff and never named, so
             // their version resources are not worth reading.
@@ -414,12 +488,19 @@ impl Provider {
             };
         }
 
-        // Sign-in time: the start of the oldest process in our session.
+        // Sign-in time: the start of the oldest process in our session that
+        // runs as our user. Session 1 exists from boot, with winlogon and
+        // dwm in it, so the session alone would give the boot time. If the
+        // owners cannot be read, the session alone it is.
         let own_session = processes.iter().find(|p| p.is_self).map(|p| p.session);
+        let any_ours = ours.iter().filter(|&&o| o).count() > 1;
         let signed_in_at_ms = processes
             .iter()
-            .filter(|p| Some(p.session) == own_session && p.started_at_ms > 0)
-            .map(|p| p.started_at_ms)
+            .zip(&ours)
+            .filter(|&(p, &o)| {
+                Some(p.session) == own_session && p.started_at_ms > 0 && (o || !any_ours)
+            })
+            .map(|(p, _)| p.started_at_ms)
             .min()
             .unwrap_or(at_ms);
 

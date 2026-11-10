@@ -10,6 +10,9 @@ mod output;
 // Runs only on Windows; on Linux its tests drive it with a fake machine.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod selftest;
+// state.json is read and written by the live app on Windows; its tests run everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod store;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod win;
@@ -116,14 +119,19 @@ fn demo() -> ExitCode {
 
 #[cfg(windows)]
 fn run(minimized: bool) -> ExitCode {
+    // Watched time, flags and hues carry over from the last run. The
+    // Family list is a setting; until settings arrive (M5) it is empty.
+    let state_path = store::state_path();
+    let state = state_path.as_deref().map(store::load).unwrap_or_default();
     let content = win::shell::Content::Live {
         provider: win::provider::Provider::new(),
         live: Box::new(ramlord_core::live::Live::new(
             Rules::builtin(),
             Lease::placeholder(),
-            ramlord_core::flags::State::default(),
+            state,
             Default::default(),
         )),
+        state_path,
     };
     match win::shell::show(content, minimized) {
         Ok(()) => ExitCode::SUCCESS,
@@ -150,7 +158,6 @@ fn dump(out: &Path) -> ExitCode {
 /// `--self-test`: 10 seconds of sampling and drawing off screen.
 #[cfg(windows)]
 fn self_test(out: &Path) -> ExitCode {
-    use std::time::Duration;
     let exe_bytes = std::env::current_exe()
         .and_then(std::fs::metadata)
         .map(|m| m.len())
@@ -168,8 +175,7 @@ fn self_test(out: &Path) -> ExitCode {
     let report = selftest::run(
         &mut machine,
         &mut live,
-        Duration::from_secs(10),
-        Duration::from_secs(2),
+        &selftest::Schedule::SPEC,
         exe_bytes,
         cpus,
         &selftest::Limits::SPEC,

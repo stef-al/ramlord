@@ -4,11 +4,13 @@
 //! the window moves to another monitor or the display changes. Per-monitor
 //! DPI awareness v2 keeps the pixels square at any display scaling.
 //!
-//! Live, it samples every 2 seconds (5 while minimized) and redraws only
-//! when the frame changes. Closing the window ends the program; the tray
-//! comes with M5.
+//! Live, it samples every 2 seconds (5 while minimized), credits focus
+//! every second, and redraws only when the frame changes. It saves
+//! `state.json` every minute and when the window closes. Closing the
+//! window ends the program; the tray comes with M5.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 use ramlord_core::Frame;
 use ramlord_core::live::Live;
@@ -41,6 +43,11 @@ use super::provider::Provider;
 const SAMPLE_MS: u32 = 2_000;
 const SAMPLE_HIDDEN_MS: u32 = 5_000;
 const TIMER_ID: usize = 1;
+/// Focus is sampled every second (SPEC.md, Timing).
+const FOCUS_TIMER_ID: usize = 2;
+const FOCUS_MS: u32 = 1_000;
+/// How often the state file is written while running.
+const SAVE_EVERY_MS: u64 = 60_000;
 
 /// A fixed size: no thick frame, no maximize box.
 const STYLE: WINDOW_STYLE =
@@ -50,8 +57,12 @@ const STYLE: WINDOW_STYLE =
 pub enum Content {
     /// One frame that never changes: `--demo`.
     Still(Frame),
-    /// The PC itself.
-    Live { provider: Provider, live: Box<Live> },
+    /// The PC itself. `state_path` is where `state.json` is saved.
+    Live {
+        provider: Provider,
+        live: Box<Live>,
+        state_path: Option<PathBuf>,
+    },
 }
 
 struct State {
@@ -59,6 +70,8 @@ struct State {
     frame: Frame,
     scale: u32,
     interval_ms: u32,
+    /// Sample time of the last save.
+    saved_at_ms: u64,
 }
 
 thread_local! {
@@ -158,7 +171,7 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
     let mut content = content;
     let frame = match &mut content {
         Content::Still(frame) => frame.clone(),
-        Content::Live { provider, live } => {
+        Content::Live { provider, live, .. } => {
             let snapshot = provider.sample()?;
             live.update(&snapshot).map_err(|e| e.to_string())?;
             live.frame().cloned().ok_or("no frame")?
@@ -171,6 +184,7 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
             frame,
             scale: 2,
             interval_ms: SAMPLE_MS,
+            saved_at_ms: 0,
         })
     });
     // A first size from the primary monitor; `fit` corrects it once the
@@ -222,6 +236,7 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
         let _ = UpdateWindow(hwnd);
         if live {
             SetTimer(Some(hwnd), TIMER_ID, SAMPLE_MS, None);
+            SetTimer(Some(hwnd), FOCUS_TIMER_ID, FOCUS_MS, None);
         }
 
         let mut msg = MSG::default();
@@ -251,14 +266,27 @@ fn tick(hwnd: HWND) {
         };
         let retime = state.interval_ms != want;
         state.interval_ms = want;
-        let Content::Live { provider, live } = &mut state.content else {
+        let Content::Live {
+            provider,
+            live,
+            state_path,
+        } = &mut state.content
+        else {
             return (false, retime);
         };
         // A failed sample keeps the last frame; the next tick tries again.
         let Ok(snapshot) = provider.sample() else {
             return (false, retime);
         };
-        match live.update(&snapshot) {
+        let updated = live.update(&snapshot);
+        if snapshot.at_ms.abs_diff(state.saved_at_ms) >= SAVE_EVERY_MS {
+            if let Some(path) = state_path {
+                // A failed save is retried at the next one.
+                let _ = crate::store::save(path, live.state());
+            }
+            state.saved_at_ms = snapshot.at_ms;
+        }
+        match updated {
             Ok(true) => {
                 if let Some(frame) = live.frame() {
                     state.frame = frame.clone();
@@ -279,6 +307,42 @@ fn tick(hwnd: HWND) {
     }
 }
 
+/// Credits focus to the foreground window's process.
+fn focus() {
+    let Some(pid) = super::provider::foreground_pid() else {
+        return;
+    };
+    STATE.with(|s| {
+        if let Ok(mut s) = s.try_borrow_mut()
+            && let Some(State {
+                content: Content::Live { live, .. },
+                ..
+            }) = s.as_mut()
+        {
+            live.focus(pid);
+        }
+    });
+}
+
+/// Writes `state.json`, if the window is live.
+fn save() {
+    STATE.with(|s| {
+        if let Ok(s) = s.try_borrow()
+            && let Some(State {
+                content:
+                    Content::Live {
+                        live,
+                        state_path: Some(path),
+                        ..
+                    },
+                ..
+            }) = s.as_ref()
+        {
+            let _ = crate::store::save(path, live.state());
+        }
+    });
+}
+
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => {
@@ -286,7 +350,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_TIMER => {
-            tick(hwnd);
+            match wparam.0 {
+                FOCUS_TIMER_ID => focus(),
+                _ => tick(hwnd),
+            }
             LRESULT(0)
         }
         // Moved to a monitor with another DPI: keep the suggested position,
@@ -321,6 +388,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         // avoids a flash of background.
         WM_ERASEBKGND => LRESULT(1),
         WM_DESTROY => {
+            save();
             // SAFETY: ends this thread's message loop.
             unsafe { PostQuitMessage(0) };
             LRESULT(0)

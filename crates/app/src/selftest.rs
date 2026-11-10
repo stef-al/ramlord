@@ -14,10 +14,30 @@ const MIB: u64 = 1 << 20;
 /// What the self-test needs from the PC.
 pub trait Machine {
     fn snapshot(&mut self) -> Result<Snapshot, String>;
+    /// The process that owns the foreground window.
+    fn foreground(&mut self) -> Option<u32>;
     /// CPU time this process has used so far, user and kernel.
     fn cpu_time(&self) -> Duration;
     /// This process's private working set now.
     fn own_bytes(&self) -> u64;
+}
+
+/// How long to run and how often to sample (SPEC.md, Timing).
+pub struct Schedule {
+    pub duration: Duration,
+    /// Processes and memory.
+    pub sample_every: Duration,
+    /// The foreground window; a whole fraction of `sample_every`.
+    pub focus_every: Duration,
+}
+
+impl Schedule {
+    /// Ten seconds, as the real app samples them.
+    pub const SPEC: Schedule = Schedule {
+        duration: Duration::from_secs(10),
+        sample_every: Duration::from_secs(2),
+        focus_every: Duration::from_secs(1),
+    };
 }
 
 /// The budget limits (SPEC.md, Budgets).
@@ -64,6 +84,8 @@ pub struct Report {
     pub processes: usize,
     pub tenants: usize,
     pub rent_is_estimate: bool,
+    /// Times the foreground window was read.
+    pub focus_samples: usize,
     pub errors: Vec<String>,
 }
 
@@ -96,6 +118,7 @@ impl Report {
             "processes": self.processes,
             "tenants": self.tenants,
             "rent_is_estimate": self.rent_is_estimate,
+            "focus_samples": self.focus_samples,
             "errors": self.errors,
         });
         let mut text = serde_json::to_string_pretty(&report).unwrap_or_default();
@@ -113,12 +136,14 @@ fn micros(d: Duration) -> u64 {
 pub fn run(
     machine: &mut dyn Machine,
     live: &mut Live,
-    duration: Duration,
-    interval: Duration,
+    schedule: &Schedule,
     exe_bytes: u64,
     cpus: u64,
     limits: &Limits,
 ) -> Report {
+    let duration = schedule.duration;
+    let focus_every = schedule.focus_every.max(Duration::from_micros(1));
+    let every = (schedule.sample_every.as_micros() / focus_every.as_micros()).max(1) as u32;
     let start = Instant::now();
     let cpu_start = machine.cpu_time();
     let mut report = Report {
@@ -129,18 +154,27 @@ pub fn run(
         processes: 0,
         tenants: 0,
         rent_is_estimate: false,
+        focus_samples: 0,
         errors: Vec::new(),
     };
     let mut tick = 0u32;
     loop {
-        let due = interval * tick;
+        let due = focus_every * tick;
         if due >= duration {
             break;
         }
         if let Some(wait) = due.checked_sub(start.elapsed()) {
             std::thread::sleep(wait);
         }
+        let sample_now = tick % every == 0;
         tick += 1;
+        if let Some(pid) = machine.foreground() {
+            live.focus(pid);
+            report.focus_samples += 1;
+        }
+        if !sample_now {
+            continue;
+        }
 
         let t = Instant::now();
         let snapshot = match machine.snapshot() {
@@ -248,6 +282,9 @@ mod tests {
         fn own_bytes(&self) -> u64 {
             self.own
         }
+        fn foreground(&mut self) -> Option<u32> {
+            Some(10)
+        }
     }
 
     fn live() -> Live {
@@ -288,14 +325,19 @@ mod tests {
         let r = run(
             &mut m,
             &mut live(),
-            Duration::from_millis(60),
-            Duration::from_millis(20),
+            &Schedule {
+                duration: Duration::from_millis(60),
+                sample_every: Duration::from_millis(20),
+                focus_every: Duration::from_millis(10),
+            },
             MIB,
             4,
             &generous,
         );
         assert_eq!(r.snapshot_us.len(), 3);
         assert_eq!(r.frame_us.len(), 3);
+        // Focus is read twice per sample.
+        assert_eq!(r.focus_samples, 6);
         assert!(r.wall >= Duration::from_millis(60));
         assert_eq!(r.tenants, 1);
         assert!(r.pass(), "{r:?}");
@@ -312,8 +354,11 @@ mod tests {
         let r = run(
             &mut m,
             &mut live(),
-            Duration::from_millis(60),
-            Duration::from_millis(20),
+            &Schedule {
+                duration: Duration::from_millis(60),
+                sample_every: Duration::from_millis(20),
+                focus_every: Duration::from_millis(10),
+            },
             6 * MIB,
             4,
             &Limits::SPEC,
@@ -331,8 +376,11 @@ mod tests {
         let r = run(
             &mut m,
             &mut live(),
-            Duration::from_millis(20),
-            Duration::from_millis(10),
+            &Schedule {
+                duration: Duration::from_millis(20),
+                sample_every: Duration::from_millis(10),
+                focus_every: Duration::from_millis(5),
+            },
             MIB,
             4,
             &Limits::SPEC,

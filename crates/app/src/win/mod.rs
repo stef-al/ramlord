@@ -30,4 +30,8 @@ impl Machine for Pc {
     fn own_bytes(&self) -> u64 {
         provider::own_private_bytes()
     }
+
+    fn foreground(&mut self) -> Option<u32> {
+        provider::foreground_pid()
+    }
 }
