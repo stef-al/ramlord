@@ -322,6 +322,32 @@ fn a_vm_host_is_a_tenant_even_in_session_0_and_unopened() {
     assert_eq!(g.tenant_of(1210).unwrap().id, "vmmem");
 }
 
+/// From the owner's PC: HP Sure Click's micro-VM manager runs in session 0
+/// under its service and holds 1,186 MiB in RAM, none of it private, with
+/// 7 MiB committed. Its whole working set is the guests' rent.
+#[test]
+fn sure_click_micro_vms_are_a_tenant_billed_for_their_working_set() {
+    let mut pc = Pc::new();
+    pc.add(1400, 50, None, 17).image_name = Some("BrService.exe".into());
+    pc.0.processes.last_mut().unwrap().session = 0;
+    let vms = pc.add(1410, 1400, None, 0);
+    vms.session = 0;
+    vms.image_name = Some("Br-uxendm.exe".into());
+    vms.working_set_bytes = 1186 * MIB;
+    vms.lease_bytes = 7 * MIB;
+    assert_eq!(pc.tenants(), [row("Sure Click", 1, 1186)]);
+    assert_eq!(pc.role(1400), Role::Staff);
+    let g = group(&pc.0, &Rules::builtin());
+    let sure_click = g.tenant_of(1410).unwrap();
+    assert_eq!(
+        sure_click.packed_bytes, 0,
+        "its lease is less than its rent"
+    );
+    let b = building(&pc.0, &Rules::builtin(), &Lease::placeholder());
+    b.validate().expect("the guests' memory comes out of Staff");
+    assert_eq!(b.staff_bytes, 16 * GIB - 6 * GIB - 1186 * MIB);
+}
+
 #[test]
 fn memory_compression_becomes_boxes_and_tenants_show_what_they_packed() {
     let mut pc = Pc::new();

@@ -16,7 +16,10 @@
 //!
 //! Two additions the owner asked for: a virtual machine host (`vm_hosts`,
 //! such as `vmmem`) is a tenant of its own even in session 0, since its
-//! memory is a guest's; and the Memory Compression process (`compression`)
+//! memory is a guest's, and its rent is its whole working set, since a
+//! guest's memory is mapped rather than private (HP Sure Click's micro-VMs
+//! hold over a gigabyte with no private memory at all); and the Memory
+//! Compression process (`compression`)
 //! holds tenants' pages compressed, which the tower shows as boxes in the
 //! basement rather than as Staff.
 
@@ -271,11 +274,16 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
             started_at_ms: 0,
             has_window: false,
         });
-        tenant.rent_bytes += p.rent_bytes;
+        let rent = if grouper.is_vm_host(p) {
+            p.rent_bytes.max(p.working_set_bytes)
+        } else {
+            p.rent_bytes
+        };
+        tenant.rent_bytes += rent;
         tenant.lease_bytes += p.lease_bytes;
         tenant.process_count += 1;
         tenant.pids.push(pid);
-        tenant.packed_bytes += p.lease_bytes.saturating_sub(p.rent_bytes);
+        tenant.packed_bytes += p.lease_bytes.saturating_sub(rent);
         tenant.has_window |= p.has_visible_window;
         if p.started_at_ms > 0
             && (tenant.started_at_ms == 0 || p.started_at_ms < tenant.started_at_ms)

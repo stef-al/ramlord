@@ -19,9 +19,12 @@ companies = ["adobe", "amd", "apple", "asus", "brave", "dell", "google", "hp", "
   "valve"]
 
 # Virtual machine hosts. vmmem holds a virtual machine's memory (WSL,
-# Hyper-V, Windows Sandbox and other containers). They run in session 0
-# and cannot be opened, but that memory is a guest's, so each is a tenant.
-vm_hosts = ["vmmem", "vmmemcmzygote", "vmmemcmfirstboot", "vmmemwsa"]
+# Hyper-V, Windows Sandbox and other containers); br-uxendm.exe holds HP
+# Sure Click's micro-VMs. They run in session 0 and cannot be opened, but
+# that memory is a guest's, so each is a tenant. A guest's memory is
+# mapped into the host rather than private to it, so a VM host's rent is
+# its whole working set.
+vm_hosts = ["vmmem", "vmmemcmzygote", "vmmemcmfirstboot", "vmmemwsa", "br-uxendm.exe"]
 
 # The Memory Compression process holds tenants' pages, compressed: the
 # boxes in the basement. Its working set is shown apart from Staff.
@@ -52,3 +55,4 @@ compression = ["memcompression", "memory compression"]
 "vmmemcmzygote" = "Sandbox"
 "vmmemcmfirstboot" = "Sandbox"
 "vmmemwsa" = "Android"
+"br-uxendm.exe" = "Sure Click"
