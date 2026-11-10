@@ -48,6 +48,10 @@ pub enum Target {
     Settings,
     /// Staff's units or its rent roll row: the Staff card.
     Staff,
+    /// Others' units or its rent roll row: the Others card.
+    Others,
+    /// The Others card's next page.
+    More,
     Evict,
     Family,
     Startup,
@@ -220,6 +224,8 @@ pub enum View {
     Details,
     /// The Staff card: what Staff is made of.
     Staff,
+    /// The Others card: everyone the rent roll does not list.
+    Others,
 }
 
 /// What the state machine needs to know about the moment.
@@ -227,6 +233,8 @@ pub struct Context<'a> {
     pub building: &'a Building,
     /// Tenants in rent roll order (indices into `building.tenants`).
     pub rows: &'a [usize],
+    /// The Others card's tenants, in its order.
+    pub others: &'a [usize],
     /// The clickable regions of the frame on screen.
     pub regions: &'a [Region],
     /// Each tenant's processes, by tenant id.
@@ -240,7 +248,13 @@ pub struct Ui {
     pub selected: Option<String>,
     pub eviction: Eviction,
     pub family: BTreeSet<String>,
+    /// Where the details card goes back to: the rent roll, or the Others
+    /// card it was opened from.
+    pub back_to: View,
 }
+
+/// Rows on one page of the Others card.
+pub const OTHERS_PAGE: usize = 13;
 
 impl Ui {
     pub fn new(family: BTreeSet<String>) -> Ui {
@@ -249,6 +263,7 @@ impl Ui {
             selected: None,
             eviction: Eviction::Idle,
             family,
+            back_to: View::Roll,
         }
     }
 
@@ -282,7 +297,7 @@ impl Ui {
         if self.selected_index(building).is_none() {
             self.selected = None;
             if self.view == View::Details {
-                self.view = View::Roll;
+                self.view = self.back_to;
             }
         }
         report
@@ -399,6 +414,11 @@ impl Ui {
         match input {
             Input::Click { x, y } => match hit(cx.regions, x, y) {
                 Some(Target::Tenant(t)) => {
+                    // From the Others card, Back returns to it.
+                    self.back_to = match self.view {
+                        View::Others => View::Others,
+                        _ => View::Roll,
+                    };
                     self.select(cx.building, t, View::Details);
                     Vec::new()
                 }
@@ -407,10 +427,30 @@ impl Ui {
                     self.view = View::Staff;
                     Vec::new()
                 }
+                Some(Target::Others) => {
+                    self.selected = None;
+                    self.view = View::Others;
+                    Vec::new()
+                }
+                Some(Target::More) => {
+                    // The first tenant of the next page, round to the first.
+                    let at = selected
+                        .and_then(|s| cx.others.iter().position(|&t| t == s))
+                        .unwrap_or(0);
+                    let next = (at / OTHERS_PAGE + 1) * OTHERS_PAGE;
+                    let next = if next < cx.others.len() { next } else { 0 };
+                    if let Some(&t) = cx.others.get(next) {
+                        self.select(cx.building, t, View::Others);
+                    }
+                    Vec::new()
+                }
                 Some(Target::RentRollCard) => vec![Command::RentRollCard],
                 Some(Target::Settings) => vec![Command::Settings],
                 Some(Target::Back) => {
-                    self.view = View::Roll;
+                    self.view = match self.view {
+                        View::Details => self.back_to,
+                        _ => View::Roll,
+                    };
                     Vec::new()
                 }
                 Some(Target::Evict) => {
@@ -425,11 +465,16 @@ impl Ui {
             },
             Input::Key(key) => match key {
                 Key::Up | Key::Down => {
-                    if cx.rows.is_empty() {
+                    // On the Others card, and on a card opened from it, the
+                    // keys move through its list; elsewhere, the rent roll.
+                    let in_others = self.view == View::Others
+                        || (self.view == View::Details && self.back_to == View::Others);
+                    let rows = if in_others { cx.others } else { cx.rows };
+                    if rows.is_empty() {
                         return Vec::new();
                     }
-                    let at = selected.and_then(|s| cx.rows.iter().position(|&r| r == s));
-                    let last = cx.rows.len() - 1;
+                    let at = selected.and_then(|s| rows.iter().position(|&r| r == s));
+                    let last = rows.len() - 1;
                     let next = match (key == Key::Down, at) {
                         (true, None) => 0,
                         (false, None) => last,
@@ -441,11 +486,15 @@ impl Ui {
                         View::Staff => View::Roll,
                         view => view,
                     };
-                    self.select(cx.building, cx.rows[next], view);
+                    self.select(cx.building, rows[next], view);
                     Vec::new()
                 }
                 Key::Enter => {
-                    if selected.is_some() {
+                    if selected.is_some() && self.view != View::Details {
+                        self.back_to = match self.view {
+                            View::Others => View::Others,
+                            _ => View::Roll,
+                        };
                         self.view = View::Details;
                     }
                     Vec::new()
@@ -457,10 +506,10 @@ impl Ui {
                     Vec::new()
                 }
                 Key::Escape => {
-                    if self.view == View::Roll {
-                        self.selected = None;
-                    } else {
-                        self.view = View::Roll;
+                    match self.view {
+                        View::Roll => self.selected = None,
+                        View::Details => self.view = self.back_to,
+                        _ => self.view = View::Roll,
                     }
                     Vec::new()
                 }
@@ -672,6 +721,7 @@ mod tests {
             Context {
                 building: &self.building,
                 rows: &self.rows,
+                others: &[],
                 regions: &self.regions,
                 pids: &self.pids,
                 now_ms,

@@ -128,6 +128,7 @@ impl Live {
         let panel = match (&self.ui.eviction, &details) {
             (Eviction::Idle, Some(details)) => Panel::Details(details),
             (Eviction::Idle, None) if self.ui.view == View::Staff => Panel::Staff,
+            (Eviction::Idle, None) if self.ui.view == View::Others => Panel::Others,
             (Eviction::Idle, None) => Panel::Roll,
             (eviction, _) => Panel::Dialog(eviction),
         };
@@ -170,14 +171,12 @@ impl Live {
         let Some(scene) = &self.scene else {
             return Vec::new();
         };
-        let rows: Vec<usize> = Roll::new(&scene.building, &scene.layout)
-            .rows
-            .iter()
-            .map(|r| r.tenant)
-            .collect();
+        let roll = Roll::new(&scene.building, &scene.layout);
+        let rows: Vec<usize> = roll.rows.iter().map(|r| r.tenant).collect();
         let cx = Context {
             building: &scene.building,
             rows: &rows,
+            others: &roll.rest,
             regions: &self.regions,
             pids: &scene.pids,
             now_ms,

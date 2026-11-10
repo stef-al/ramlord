@@ -21,12 +21,34 @@ pub enum Owner {
     Tenant(usize),
     Others,
     Vacant,
-    /// Compressed memory in the basement: a named tenant's boxes, or
-    /// everyone else's (None).
-    Boxes(Option<usize>),
-    /// Graphics memory in RAM: a named tenant's pictures, or everyone
-    /// else's (None), Windows' own included.
-    Gallery(Option<usize>),
+    /// Compressed memory in the basement: whose boxes.
+    Boxes(Holder),
+    /// Graphics memory in RAM: whose pictures.
+    Gallery(Holder),
+}
+
+/// Whose boxes or pictures: a named tenant's, Others' (the merged
+/// tenants', and named tenants' too small for their own), or Staff's
+/// (Windows' own processes and what no process claims).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Holder {
+    Staff,
+    Tenant(usize),
+    Others,
+}
+
+impl Owner {
+    /// Who a cell belongs to, whether a unit, a box or a picture. None for
+    /// Vacant.
+    pub fn holder(self) -> Option<Holder> {
+        match self {
+            Owner::Staff => Some(Holder::Staff),
+            Owner::Tenant(t) => Some(Holder::Tenant(t)),
+            Owner::Others => Some(Holder::Others),
+            Owner::Boxes(h) | Owner::Gallery(h) => Some(h),
+            Owner::Vacant => None,
+        }
+    }
 }
 
 /// One entry of the split, in fill order.
@@ -138,9 +160,14 @@ pub fn divide(capacity: u64, entries: &mut [Entry]) {
 
     // Rule 5: an entry with memory but no unit takes one from the entry
     // holding the most units (the first in fill order on a tie). Vacant may
-    // be zero.
+    // be zero, and so may boxes and pictures: a few megabytes of them, or
+    // what rounding leaves, are not worth a unit.
     for k in 0..entries.len() {
-        if entries[k].bytes > 0 && entries[k].units == 0 && entries[k].owner != Owner::Vacant {
+        let may_be_zero = matches!(
+            entries[k].owner,
+            Owner::Vacant | Owner::Boxes(_) | Owner::Gallery(_)
+        );
+        if entries[k].bytes > 0 && entries[k].units == 0 && !may_be_zero {
             let donor = (0..entries.len())
                 .max_by(|&a, &b| {
                     entries[a]
@@ -182,72 +209,85 @@ pub fn assign_hues(ids_in_fill_order: &[&str], saved: &HueBook) -> HueBook {
 }
 
 /// A tenant's estimated share of the boxes: the boxes split by packed
-/// memory (committed but not in RAM), the best estimate Windows allows of
-/// whose pages are compressed.
+/// memory (committed but not in RAM, pictures apart), the best estimate
+/// Windows allows of whose pages are compressed. Staff's processes have
+/// packed memory too.
 pub fn box_share(building: &Building, tenant: usize) -> u64 {
-    let packed: u128 = building
+    split_by_packed(building, building.tenants[tenant].packed_bytes)
+}
+
+fn split_by_packed(building: &Building, packed: u64) -> u64 {
+    let all: u128 = building
         .tenants
         .iter()
         .map(|t| u128::from(t.packed_bytes))
-        .sum();
-    if packed == 0 {
+        .sum::<u128>()
+        + u128::from(building.staff_packed_bytes);
+    if all == 0 {
         return 0;
     }
-    (u128::from(building.boxes_bytes) * u128::from(building.tenants[tenant].packed_bytes) / packed)
-        as u64
+    (u128::from(building.boxes_bytes) * u128::from(packed) / all) as u64
 }
 
-/// Splits `total` among the named tenants by `share_of`. One whose share
-/// is at least half a unit gets its own, largest first; the rest is
-/// everyone else's (None). Shares never add up to more than `total`.
+/// Splits `total` among its holders. A named tenant whose share is at
+/// least half a unit gets its own, largest first; smaller shares and the
+/// merged tenants' are Others'; Staff gets what is left. Shares never add
+/// up to more than `total`.
 fn shares(
     building: &Building,
     named: &[usize],
     total: u64,
     share_of: impl Fn(usize) -> u64,
-) -> Vec<(Option<usize>, u64)> {
+) -> Vec<(Holder, u64)> {
     if total == 0 {
         return Vec::new();
     }
     let capacity = u128::from(building.split_bytes().max(1));
+    let big = |share: u64| 2 * u128::from(share) * UNITS as u128 >= capacity;
     let mut own: Vec<(usize, u64)> = named
         .iter()
         .map(|&t| (t, share_of(t)))
-        .filter(|&(_, share)| 2 * u128::from(share) * UNITS as u128 >= capacity)
+        .filter(|&(_, share)| big(share))
         .collect();
+    let small = named
+        .iter()
+        .map(|&t| share_of(t))
+        .filter(|&share| !big(share));
     own.sort_by(|a, b| {
         b.1.cmp(&a.1)
             .then_with(|| building.tenants[a.0].name.cmp(&building.tenants[b.0].name))
     });
+    let merged = (0..building.tenants.len()).filter(|t| !named.contains(t));
+    let others: u64 = small.chain(merged.map(&share_of)).sum();
     let mut left = total;
-    let mut shares: Vec<(Option<usize>, u64)> = own
+    let mut take = |share: u64| {
+        let share = share.min(left);
+        left -= share;
+        share
+    };
+    let mut shares: Vec<(Holder, u64)> = own
         .into_iter()
-        .map(|(t, share)| {
-            let share = share.min(left);
-            left -= share;
-            (Some(t), share)
-        })
-        .filter(|&(_, share)| share > 0)
+        .map(|(t, share)| (Holder::Tenant(t), take(share)))
         .collect();
-    if left > 0 {
-        shares.push((None, left));
-    }
+    shares.push((Holder::Others, take(others)));
+    shares.push((Holder::Staff, left));
+    shares.retain(|&(_, share)| share > 0);
     shares
 }
 
-/// The boxes, split by `box_share`. With no packed memory at all, they
-/// are nobody's in particular.
-pub fn box_shares(building: &Building, named: &[usize]) -> Vec<(Option<usize>, u64)> {
+/// The boxes, split by `box_share`; Staff's processes' share and what
+/// rounding leaves are Staff's. With no packed memory at all, the boxes
+/// are Staff's: Windows' store.
+pub fn box_shares(building: &Building, named: &[usize]) -> Vec<(Holder, u64)> {
     shares(building, named, building.boxes_bytes, |t| {
         box_share(building, t)
     })
 }
 
-/// The gallery, split by what each tenant's processes hold: Windows
-/// reports graphics memory per process, so this is measured, not
-/// estimated. The rest is Windows' own (the desktop's windows) and
-/// everyone else's.
-pub fn gallery_shares(building: &Building, named: &[usize]) -> Vec<(Option<usize>, u64)> {
+/// The gallery, split by what each tenant's processes hold (estimated, see
+/// `tenants::gpu_owned`). What tenants do not hold is Staff's: the
+/// desktop's own pictures and what no process claims.
+pub fn gallery_shares(building: &Building, named: &[usize]) -> Vec<(Holder, u64)> {
     shares(building, named, building.gallery_bytes, |t| {
         building.tenants[t].gpu_bytes
     })
@@ -283,8 +323,8 @@ impl Layout {
         // floors: tenants' pictures, kept by the graphics adapter in RAM.
         let mut entries: Vec<Entry> = box_shares(building, &named)
             .into_iter()
-            .map(|(tenant, bytes)| Entry {
-                owner: Owner::Boxes(tenant),
+            .map(|(holder, bytes)| Entry {
+                owner: Owner::Boxes(holder),
                 bytes,
                 units: 0,
             })
@@ -292,8 +332,8 @@ impl Layout {
         entries.extend(
             gallery_shares(building, &named)
                 .into_iter()
-                .map(|(tenant, bytes)| Entry {
-                    owner: Owner::Gallery(tenant),
+                .map(|(holder, bytes)| Entry {
+                    owner: Owner::Gallery(holder),
                     bytes,
                     units: 0,
                 }),
@@ -723,26 +763,35 @@ mod tests {
         let total_packed = 4106u128;
         let a = (1024u128 * MIB as u128 * 3072 / total_packed) as u64;
         let bb = (1024u128 * MIB as u128 * 1024 / total_packed) as u64;
+        let c = (1024u128 * MIB as u128 * 10 / total_packed) as u64;
+        // C's share is too small for boxes of its own: Others' stack. What
+        // rounding leaves is Staff's.
         assert_eq!(
             shares,
-            [(Some(0), a), (Some(1), bb), (None, 1024 * MIB - a - bb)]
+            [
+                (Holder::Tenant(0), a),
+                (Holder::Tenant(1), bb),
+                (Holder::Others, c),
+                (Holder::Staff, 1024 * MIB - a - bb - c)
+            ]
         );
 
         let (layout, _) = Layout::new(&b, &HueBook::new());
-        assert_eq!(layout.entries[0].owner, Owner::Boxes(Some(0)));
-        assert_eq!(layout.cells[0], Owner::Boxes(Some(0)));
+        assert_eq!(layout.entries[0].owner, Owner::Boxes(Holder::Tenant(0)));
+        assert_eq!(layout.cells[0], Owner::Boxes(Holder::Tenant(0)));
         // 8 GiB: a unit is 32 MiB. A's boxes (23.9 units) and B's (7.98)
-        // round up to 24 and 8; the shared stack (2.5 MiB) gets one unit
-        // by rule 5.
-        assert_eq!(layout.box_units(), 33);
-        assert_eq!(layout.units_of(Owner::Boxes(None)), 1);
+        // round up to 24 and 8; Others' 2.5 MiB and Staff's few bytes get
+        // none: rule 5 does not apply to boxes.
+        assert_eq!(layout.box_units(), 32);
+        assert_eq!(layout.units_of(Owner::Boxes(Holder::Others)), 0);
+        assert_eq!(layout.units_of(Owner::Boxes(Holder::Staff)), 0);
         assert_eq!(layout.entries.iter().map(|e| e.units).sum::<u32>(), 256);
     }
 
     #[test]
     fn the_gallery_hangs_after_the_boxes_split_by_measured_graphics_memory() {
         // 8 GiB: a unit is 32 MiB. A holds 640 MiB of pictures (20 units),
-        // B 8 MiB (too few for its own), Windows the rest of 1 GiB.
+        // B 8 MiB (too few for its own: Others'), Staff the rest of 1 GiB.
         let mut b = building(
             3072 * MIB,
             &[("A", 3072 * MIB), ("B", 1024 * MIB)],
@@ -758,20 +807,25 @@ mod tests {
         let (layout, _) = Layout::new(&b, &HueBook::new());
         let owners: Vec<Owner> = layout.entries.iter().map(|e| e.owner).collect();
         assert_eq!(
-            owners[..4],
+            owners[..5],
             [
-                Owner::Boxes(Some(0)),
-                Owner::Gallery(Some(0)),
-                Owner::Gallery(None),
+                Owner::Boxes(Holder::Tenant(0)),
+                Owner::Gallery(Holder::Tenant(0)),
+                Owner::Gallery(Holder::Others),
+                Owner::Gallery(Holder::Staff),
                 Owner::Staff
             ]
         );
-        assert_eq!(layout.units_of(Owner::Gallery(Some(0))), 20);
-        assert_eq!(layout.units_of(Owner::Gallery(None)), 12);
+        assert_eq!(layout.units_of(Owner::Gallery(Holder::Tenant(0))), 20);
+        assert_eq!(layout.units_of(Owner::Gallery(Holder::Others)), 0);
+        assert_eq!(layout.units_of(Owner::Gallery(Holder::Staff)), 12);
         assert_eq!(layout.gallery_units(), 32);
-        // The boxes are first, in the basement; the gallery right above.
-        assert_eq!(layout.cells[0], Owner::Boxes(Some(0)));
-        assert_eq!(layout.cells[8], Owner::Gallery(Some(0)));
+        // The boxes are first, in the basement; the gallery right above,
+        // Staff's pictures last, next to Staff.
+        assert_eq!(layout.cells[0], Owner::Boxes(Holder::Tenant(0)));
+        assert_eq!(layout.cells[8], Owner::Gallery(Holder::Tenant(0)));
+        assert_eq!(layout.cells[28], Owner::Gallery(Holder::Staff));
+        assert_eq!(layout.cells[40], Owner::Staff);
     }
 
     #[test]
@@ -781,16 +835,16 @@ mod tests {
         b.staff_bytes -= 512 * MIB;
         b.gallery_bytes = 512 * MIB;
         b.tenants[0].gpu_bytes = 900 * MIB;
-        assert_eq!(gallery_shares(&b, &[0]), [(Some(0), 512 * MIB)]);
+        assert_eq!(gallery_shares(&b, &[0]), [(Holder::Tenant(0), 512 * MIB)]);
     }
 
     #[test]
-    fn boxes_with_nothing_packed_are_nobodys() {
+    fn boxes_with_nothing_packed_are_windows_own() {
         let mut b = building(1000 * MIB, &[("A", 2000 * MIB)], 4168 * MIB);
         b.boxes_bytes = 1024 * MIB;
         b.capacity_bytes += 1024 * MIB;
         let (named, _) = split_named(&b);
-        assert_eq!(box_shares(&b, &named), [(None, 1024 * MIB)]);
+        assert_eq!(box_shares(&b, &named), [(Holder::Staff, 1024 * MIB)]);
         b.boxes_bytes = 0;
         assert!(box_shares(&b, &named).is_empty());
     }

@@ -8,7 +8,7 @@ use std::io::Cursor;
 use std::path::Path;
 
 use ramlord_core::flags::State;
-use ramlord_core::layout::{Layout, Owner};
+use ramlord_core::layout::{Holder, Layout, Owner};
 use ramlord_core::live::Live;
 use ramlord_core::scene::{self, Details, Panel, TOWER_PNG_SCALE};
 use ramlord_core::tenants::Lease;
@@ -91,7 +91,11 @@ fn the_details_card_offers_the_right_actions() {
             .filter(|t| {
                 !matches!(
                     t,
-                    Target::Tenant(_) | Target::Staff | Target::RentRollCard | Target::Settings
+                    Target::Tenant(_)
+                        | Target::Staff
+                        | Target::Others
+                        | Target::RentRollCard
+                        | Target::Settings
                 )
             })
             .collect();
@@ -121,7 +125,11 @@ fn dialogs_offer_their_buttons() {
             .filter(|t| {
                 !matches!(
                     t,
-                    Target::Tenant(_) | Target::Staff | Target::RentRollCard | Target::Settings
+                    Target::Tenant(_)
+                        | Target::Staff
+                        | Target::Others
+                        | Target::RentRollCard
+                        | Target::Settings
                 )
             })
             .collect()
@@ -358,7 +366,7 @@ fn the_lease_is_broken_down_on_the_card() {
     let picture = layout
         .cells
         .iter()
-        .position(|&o| o == Owner::Gallery(Some(index)))
+        .position(|&o| o == Owner::Gallery(Holder::Tenant(index)))
         .expect("Chrome has pictures of its own");
     let (x, y) = unit((picture / 16) as i32, (picture % 16) as i32);
     live.input(Input::Key(Key::Escape), now);
@@ -440,6 +448,213 @@ fn staff_opens_its_card_with_its_parts() {
     live.input(Input::Key(Key::Down), now);
     assert_eq!(live.ui().view, View::Roll);
     assert!(live.ui().selected.is_some());
+}
+
+/// The top-left pixel of a unit; floor 0 is the ground floor.
+fn cell_origin(index: usize) -> (u32, u32) {
+    let (floor, col) = ((index / 16) as u32, (index % 16) as u32);
+    (16 + col * 12, 30 + (15 - floor) * 11)
+}
+
+/// Every unit, box and picture can be clicked, and leads to its holder: a
+/// tenant, Staff or Others. Selecting a tenant outlines all it has.
+#[test]
+fn every_part_of_the_house_leads_to_its_holder() {
+    let mut live = live();
+    let snapshot = gallery();
+    live.update(&snapshot).unwrap();
+    let now = snapshot.at_ms;
+    let b = live.building().unwrap().clone();
+    let (layout, _) = Layout::new(&b, &HueBook::new());
+    for (index, owner) in layout.cells.iter().enumerate() {
+        let (x, y) = cell_origin(index);
+        let want = match owner.holder() {
+            Some(Holder::Tenant(t)) => Some(Target::Tenant(t)),
+            Some(Holder::Staff) => Some(Target::Staff),
+            Some(Holder::Others) => Some(Target::Others),
+            None => None,
+        };
+        assert_eq!(
+            hit(live.regions(), x as i32 + 5, y as i32 + 5),
+            want,
+            "cell {index}"
+        );
+    }
+    // A click on one of Chrome's boxes selects Chrome and outlines its
+    // units, boxes and pictures alike.
+    let chrome = b.tenants.iter().position(|t| t.name == "Chrome").unwrap();
+    let mine = Holder::Tenant(chrome);
+    let first = |part: fn(Holder) -> Owner| {
+        layout
+            .cells
+            .iter()
+            .position(|&o| o == part(mine))
+            .expect("Chrome has one")
+    };
+    let (bx, by) = cell_origin(first(Owner::Boxes));
+    live.input(
+        Input::Click {
+            x: bx as i32 + 5,
+            y: by as i32 + 5,
+        },
+        now,
+    );
+    assert_eq!(live.ui().view, View::Details);
+    save(live.frame().unwrap(), "holder-chrome.png");
+    let frame = live.frame().unwrap();
+    let text = ramlord_core::palette::TEXT;
+    for part in [Owner::Boxes, Owner::Gallery] {
+        // Its first cell of each kind has an outline on its left or below.
+        let index = first(part);
+        let (x, y) = cell_origin(index);
+        let left = index % 16 > 0 && layout.cells[index - 1].holder() != Some(mine);
+        let lit = if left {
+            frame.pixel(x - 1, y + 4)
+        } else {
+            frame.pixel(x + 4, y + 10)
+        };
+        assert_eq!(lit, text, "{:?} is outlined", part(mine));
+    }
+    // A click on Staff's pictures opens the Staff card.
+    let staff_picture = layout
+        .cells
+        .iter()
+        .position(|&o| o == Owner::Gallery(Holder::Staff))
+        .expect("Windows hangs pictures too");
+    let (sx, sy) = cell_origin(staff_picture);
+    live.input(Input::Key(Key::Escape), now);
+    live.input(
+        Input::Click {
+            x: sx as i32 + 5,
+            y: sy as i32 + 5,
+        },
+        now,
+    );
+    assert_eq!(live.ui().view, View::Staff);
+    save(live.frame().unwrap(), "holder-staff.png");
+}
+
+/// A PC with twenty small apps: each under half a unit, they all live in
+/// Others.
+fn many_small() -> Snapshot {
+    let mut s = desk();
+    let parent = s
+        .processes
+        .iter()
+        .find(|p| {
+            p.image_path
+                .as_deref()
+                .is_some_and(|i| i.ends_with("explorer.exe"))
+        })
+        .unwrap()
+        .pid;
+    for k in 0..20u32 {
+        let mut p = s
+            .processes
+            .iter()
+            .find(|p| p.pid == parent)
+            .unwrap()
+            .clone();
+        p.pid = 9000 + k;
+        p.parent_pid = parent;
+        p.started_at_ms += 1000 + u64::from(k);
+        p.image_path = Some(format!(r"C:\Apps\Small{k:02}\small{k:02}.exe"));
+        p.image_name = Some(format!("small{k:02}.exe"));
+        p.description = Some(format!("Small App {k:02}"));
+        p.rent_bytes = (10 + u64::from(k)) << 20;
+        p.lease_bytes = p.rent_bytes * 2;
+        p.working_set_bytes = p.rent_bytes;
+        p.has_visible_window = true;
+        p.is_self = false;
+        s.available_bytes -= p.rent_bytes;
+        s.processes.push(p);
+    }
+    s
+}
+
+/// The Others card lists everyone the rent roll does not, a page at a
+/// time; a row opens its details card, whose Back returns to the list.
+#[test]
+fn the_others_card_lists_its_apps_and_opens_their_cards() {
+    let mut live = live();
+    let snapshot = many_small();
+    live.update(&snapshot).unwrap();
+    let now = snapshot.at_ms;
+    let find = |live: &Live, target: Target, right: bool| {
+        live.regions()
+            .iter()
+            .find(|r| r.target == target && (r.x0 > 224) == right)
+            .copied()
+            .unwrap_or_else(|| panic!("{target:?} can be clicked"))
+    };
+    let click = |live: &mut Live, r: ramlord_core::ui::Region| {
+        live.input(
+            Input::Click {
+                x: r.x0 + 2,
+                y: r.y0 + 2,
+            },
+            now,
+        );
+    };
+    // The OTHERS line opens it; so do Others' units.
+    let line = find(&live, Target::Others, true);
+    click(&mut live, line);
+    assert_eq!(live.ui().view, View::Others);
+    save(live.frame().unwrap(), "others-card.png");
+    let rows = |live: &Live| {
+        live.regions()
+            .iter()
+            .filter(|r| r.x0 > 224 && matches!(r.target, Target::Tenant(_)))
+            .count()
+    };
+    assert_eq!(rows(&live), 13, "a page holds 13");
+    // MORE turns the page and selects its first row.
+    let more = find(&live, Target::More, true);
+    click(&mut live, more);
+    assert_eq!(live.ui().view, View::Others);
+    let second_page = rows(&live);
+    assert_eq!(second_page, 22 - 13, "the second page holds the rest");
+    // A row opens that app's card; Back returns to the list.
+    let row = live
+        .regions()
+        .iter()
+        .find(|r| r.x0 > 224 && matches!(r.target, Target::Tenant(_)))
+        .copied()
+        .unwrap();
+    let Target::Tenant(t) = row.target else {
+        unreachable!()
+    };
+    click(&mut live, row);
+    assert_eq!(live.ui().view, View::Details);
+    assert_eq!(
+        live.ui().selected.as_deref(),
+        Some(live.building().unwrap().tenants[t].id.as_str())
+    );
+    save(live.frame().unwrap(), "others-details.png");
+    assert!(
+        live.regions().iter().any(|r| r.target == Target::Evict),
+        "a small app can be evicted from its card"
+    );
+    let back = find(&live, Target::Back, true);
+    click(&mut live, back);
+    assert_eq!(live.ui().view, View::Others);
+    // Keys: Down moves along the list, Enter opens, Esc goes back to the
+    // list, Delete asks to evict, Esc twice leaves.
+    live.input(Input::Key(Key::Down), now);
+    live.input(Input::Key(Key::Enter), now);
+    assert_eq!(live.ui().view, View::Details);
+    live.input(Input::Key(Key::Escape), now);
+    assert_eq!(live.ui().view, View::Others);
+    live.input(Input::Key(Key::Delete), now);
+    assert!(matches!(live.ui().eviction, Eviction::Confirm { .. }));
+    live.input(Input::Key(Key::Escape), now);
+    assert_eq!(live.ui().eviction, Eviction::Idle);
+    live.input(Input::Key(Key::Escape), now);
+    assert_eq!(live.ui().view, View::Roll);
+    // Others' units open it too.
+    let unit = find(&live, Target::Others, false);
+    click(&mut live, unit);
+    assert_eq!(live.ui().view, View::Others);
 }
 
 /// The details card of Discord in the sample building, pixel for pixel.

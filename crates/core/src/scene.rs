@@ -6,10 +6,10 @@
 use crate::building::{Building, Flag, Tenant};
 use crate::font::{ADVANCE, UP_ARROW};
 use crate::format::{Shown, cut, gb_text, micros, price_text, whole_gb, whole_mb, wrap_balanced};
-use crate::layout::{COLS, FLOORS, Layout, Owner, box_share};
+use crate::layout::{COLS, FLOORS, Holder, Layout, Owner, box_share};
 use crate::palette::*;
 use crate::render::Draw;
-use crate::ui::{Eviction, Region, Target};
+use crate::ui::{Eviction, OTHERS_PAGE, Region, Target};
 
 /// The tower canvas.
 pub const WIDTH: u32 = 384;
@@ -81,6 +81,8 @@ pub struct Roll {
     pub boxes: Option<Shown>,
     /// The gallery, when there is one.
     pub gallery: Option<Shown>,
+    /// The tenants in the OTHERS line, largest first: the Others card.
+    pub rest: Vec<usize>,
 }
 
 impl Roll {
@@ -108,13 +110,19 @@ impl Roll {
                 }
             })
             .collect();
-        let rest: Vec<usize> = layout
+        let mut rest: Vec<usize> = layout
             .named
             .iter()
             .skip(listed)
             .map(|n| n.tenant)
             .chain(layout.merged.iter().copied())
             .collect();
+        rest.sort_by(|&a, &b| {
+            let (a, b) = (&building.tenants[a], &building.tenants[b]);
+            b.rent_bytes
+                .cmp(&a.rent_bytes)
+                .then_with(|| a.name.cmp(&b.name))
+        });
         let others = (!rest.is_empty()).then(|| {
             let bytes = rest.iter().map(|&t| building.tenants[t].rent_bytes).sum();
             (rest.len(), bytes, rent(bytes))
@@ -129,6 +137,7 @@ impl Roll {
             office: Shown::in_cents(micros(building.own_bytes, price)),
             boxes: (building.boxes_bytes > 0).then(|| rent(building.boxes_bytes)),
             gallery: (building.gallery_bytes > 0).then(|| rent(building.gallery_bytes)),
+            rest,
         }
     }
 }
@@ -208,6 +217,8 @@ pub enum Panel<'a> {
     Dialog(&'a Eviction),
     /// What Staff is made of.
     Staff,
+    /// Everyone the rent roll does not list.
+    Others,
 }
 
 /// The whole window: the building, the selected tenant outlined in white,
@@ -222,13 +233,14 @@ pub fn window(
     let mut d = Vec::new();
     let mut regions = Vec::new();
     building_scene(&mut d, building, layout, highlight);
-    // Every unit, box and picture of a tenant selects it; Staff's units
-    // open the Staff card.
+    // Every unit, box and picture can be clicked: a tenant's select it,
+    // Staff's and Others' open their cards.
     for (index, &owner) in layout.cells.iter().enumerate() {
-        let target = match owner {
-            Owner::Tenant(t) | Owner::Boxes(Some(t)) | Owner::Gallery(Some(t)) => Target::Tenant(t),
-            Owner::Staff => Target::Staff,
-            _ => continue,
+        let target = match owner.holder() {
+            Some(Holder::Tenant(t)) => Target::Tenant(t),
+            Some(Holder::Staff) => Target::Staff,
+            Some(Holder::Others) => Target::Others,
+            None => continue,
         };
         let (x, y) = cell_xy(index / COLS, index % COLS);
         regions.push(Region {
@@ -239,13 +251,20 @@ pub fn window(
             target,
         });
     }
-    if let Some(tenant) = selected
-        && highlight != Some(tenant)
+    // What is selected is outlined everywhere it lives: its units, its
+    // boxes and its pictures. A tenant merged into Others lives there.
+    let chosen = match panel {
+        Panel::Staff => Some(Holder::Staff),
+        Panel::Others => Some(Holder::Others),
+        _ => selected.map(|t| match layout.hue_of(t) {
+            Some(_) => Holder::Tenant(t),
+            None => Holder::Others,
+        }),
+    };
+    if let Some(holder) = chosen
+        && highlight.map(Holder::Tenant) != Some(holder)
     {
-        outline_owner(&mut d, layout, Owner::Tenant(tenant), TEXT);
-    }
-    if matches!(panel, Panel::Staff) {
-        outline_owner(&mut d, layout, Owner::Staff, TEXT);
+        outline_holder(&mut d, layout, holder, TEXT);
     }
     // The two key hints can be clicked.
     let hints_x = 376 - crate::font::text_width(25, 1) + 1;
@@ -267,7 +286,8 @@ pub fn window(
         Panel::Roll => rent_roll_panel(&mut d, &mut regions, building, layout, selected),
         Panel::Details(details) => details_panel(&mut d, &mut regions, building, layout, details),
         Panel::Dialog(eviction) => dialog_panel(&mut d, &mut regions, eviction),
-        Panel::Staff => staff_panel(&mut d, &mut regions, building),
+        Panel::Staff => staff_panel(&mut d, &mut regions, building, layout),
+        Panel::Others => others_panel(&mut d, &mut regions, building, layout, selected),
     }
     (d, regions)
 }
@@ -350,12 +370,13 @@ fn building_scene(
         if let Owner::Boxes(whose) = owner {
             // A box in its tenant's hue, taped down the middle; the shared
             // stack is plain cardboard.
-            let (body, tape, edge) = match whose.and_then(|t| layout.hue_of(t)) {
-                Some(hue) => {
-                    let hue = HUES[usize::from(hue)];
+            let (body, tape, edge) = match whose {
+                Holder::Tenant(t) => {
+                    let hue = HUES[usize::from(layout.hue_of(t).unwrap_or(0))];
                     (hue.wall, hue.window, shade(hue.wall, 70))
                 }
-                None => (CARDBOARD, CARDBOARD_TAPE, CARDBOARD_DARK),
+                Holder::Others => (OTHERS_WALL, OTHERS_WINDOW, shade(OTHERS_WALL, 70)),
+                Holder::Staff => (CARDBOARD, CARDBOARD_TAPE, CARDBOARD_DARK),
             };
             // Wider and lower than a window: it sits on the floor, with a
             // shaded lid and side.
@@ -366,12 +387,13 @@ fn building_scene(
         } else if let Owner::Gallery(whose) = owner {
             // A framed picture: a hill under a sky, in its tenant's hue;
             // the shared pictures are plain canvas.
-            let (sky, hill) = match whose.and_then(|t| layout.hue_of(t)) {
-                Some(hue) => {
-                    let hue = HUES[usize::from(hue)];
+            let (sky, hill) = match whose {
+                Holder::Tenant(t) => {
+                    let hue = HUES[usize::from(layout.hue_of(t).unwrap_or(0))];
                     (hue.window, hue.wall)
                 }
-                None => (CANVAS, CANVAS_INK),
+                Holder::Others => (OTHERS_WINDOW, OTHERS_WALL),
+                Holder::Staff => (CANVAS, CANVAS_INK),
             };
             d.push(Draw::rect(x + 2, y + 1, x + 8, y + 7, FRAME));
             d.push(Draw::rect(x + 2, y + 7, x + 8, y + 7, FRAME_DARK));
@@ -451,7 +473,7 @@ fn building_scene(
     d.push(Draw::rect(gx1, GRID_Y - 1, gx1, bottom, OUTLINE));
 
     if let Some(tenant) = highlight {
-        outline_owner(d, layout, Owner::Tenant(tenant), GOLD);
+        outline_holder(d, layout, Holder::Tenant(tenant), GOLD);
     }
 
     // Labels: NAME $RENT or NAME, a red up arrow after a leaker's.
@@ -550,14 +572,14 @@ fn building_scene(
 
 /// Outlines every edge between `owner`'s units and anyone else's, on the
 /// lines where the dark owner outline runs.
-fn outline_owner(d: &mut Vec<Draw>, layout: &Layout, owner: Owner, color: Rgb) {
-    for (index, &cell) in layout.cells.iter().enumerate() {
-        if cell != owner {
-            continue;
-        }
+/// Outlines every cell `holder` has: its units, its boxes and its
+/// pictures, each group on its own.
+fn outline_holder(d: &mut Vec<Draw>, layout: &Layout, holder: Holder, color: Rgb) {
+    let ours = |k: usize| layout.cells[k].holder() == Some(holder);
+    for index in (0..layout.cells.len()).filter(|&k| ours(k)) {
         let (floor, col) = (index / COLS, index % COLS);
         let (x, y) = cell_xy(floor, col);
-        let other = |k: Option<usize>| k.is_none_or(|k| layout.cells[k] != owner);
+        let other = |k: Option<usize>| k.is_none_or(|k| !ours(k));
         if other((col + 1 < COLS).then_some(index + 1)) {
             d.push(Draw::rect(
                 x + CELL_W - 1,
@@ -667,6 +689,13 @@ fn rent_roll_panel(
         y += 10;
     }
     if let Some((count, bytes, rent)) = roll.others {
+        regions.push(Region {
+            x0: lx0 + 1,
+            y0: y - 2,
+            x1: lx1 - 1,
+            y1: y + 7,
+            target: Target::Others,
+        });
         d.push(Draw::rect(lx0 + 5, y, lx0 + 9, y + 6, OTHERS_WALL));
         d.push(Draw::text(
             lx0 + 13,
@@ -932,10 +961,15 @@ fn details_panel(
     let hue = layout.hue_of(details.tenant).map(|h| HUES[usize::from(h)]);
     let gb = |bytes: u64| format!("{} GB", gb_text(bytes));
 
-    // Top: name and rent now, then its flags in words.
-    if let Some(hue) = hue {
-        d.push(Draw::rect(lx0 + 5, 15, lx0 + 9, 21, hue.wall));
-    }
+    // Top: name and rent now, then its flags in words. A tenant merged
+    // into Others wears Others' gray.
+    d.push(Draw::rect(
+        lx0 + 5,
+        15,
+        lx0 + 9,
+        21,
+        hue.map_or(OTHERS_WALL, |h| h.wall),
+    ));
     d.push(Draw::text(
         lx0 + 13,
         15,
@@ -1088,7 +1122,7 @@ fn details_panel(
 /// The Staff card: what Staff is made of, in the rent roll's panel. The
 /// parts come from Windows' own counters; SHARED, OTHER is what they
 /// leave, which Windows does not break down without administrator rights.
-fn staff_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, building: &Building) {
+fn staff_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, building: &Building, layout: &Layout) {
     let (lx0, lx1) = panel_frame(d);
     let symbol = building.price.symbol.as_str();
     let staff = building.staff_bytes;
@@ -1138,17 +1172,157 @@ fn staff_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, building: &Building
             swatch_row(d, (lx0, lx1), y, Some(color), label, gb(bytes));
             y += 10;
         }
+        // Besides, like a tenant: its own pictures and boxes.
         d.push(Draw::rect(lx0 + 4, 130, lx1 - 4, 130, PANEL_LINE));
-        let mut y = 134;
+        let own = |part: Owner| {
+            layout
+                .entries
+                .iter()
+                .filter(|e| e.owner == part)
+                .map(|e| e.bytes)
+                .sum::<u64>()
+        };
+        let part = |known: bool, text: String| if known { text } else { "-".into() };
+        swatch_row(
+            d,
+            (lx0, lx1),
+            134,
+            Some(FRAME),
+            "GALLERY",
+            part(
+                building.gallery_bytes > 0,
+                gb(own(Owner::Gallery(Holder::Staff))),
+            ),
+        );
+        swatch_row(
+            d,
+            (lx0, lx1),
+            143,
+            Some(CARDBOARD),
+            "BOXES",
+            part(
+                building.boxes_bytes > 0,
+                format!("~{}", gb(own(Owner::Boxes(Holder::Staff)))),
+            ),
+        );
+        d.push(Draw::rect(lx0 + 4, 153, lx1 - 4, 153, PANEL_LINE));
+        let mut y = 157;
         for line in [
-            "SHARED, OTHER: PROGRAM",
-            "CODE AND FILES APPS",
-            "SHARE, PAGE TABLES AND",
-            "MEMORY DRIVERS LOCK.",
+            "SHARED, OTHER: SHARED",
+            "CODE AND FILES, PAGE",
+            "TABLES, DRIVERS' LOCKS.",
         ] {
             d.push(Draw::text(lx0 + 5, y, line, TEXT_DIM));
             y += 9;
         }
+    }
+    button(
+        d,
+        regions,
+        (lx0 + 79, lx1 - 5),
+        198,
+        "BACK",
+        TEXT,
+        Some(Target::Back),
+    );
+}
+
+/// The Others card: everyone the rent roll does not list, largest first,
+/// a page at a time. A row opens that tenant's details card, whose Back
+/// returns here.
+fn others_panel(
+    d: &mut Vec<Draw>,
+    regions: &mut Vec<Region>,
+    building: &Building,
+    layout: &Layout,
+    selected: Option<usize>,
+) {
+    let (lx0, lx1) = panel_frame(d);
+    let symbol = building.price.symbol.as_str();
+    let estimate = building.rent_is_estimate;
+    let column = |amount: Shown| amount.fit(symbol, estimate, Some(4));
+    let roll = Roll::new(building, layout);
+    let gb_right = lx0 + 121;
+    let rent_right = lx1 - 5;
+    d.push(Draw::rect(lx0 + 5, 15, lx0 + 9, 21, OTHERS_WALL));
+    d.push(Draw::text(
+        lx0 + 13,
+        15,
+        format!("OTHERS ({})", roll.rest.len()),
+        GOLD,
+    ));
+    if let Some((_, _, rent)) = roll.others {
+        d.push(Draw::text_right(
+            lx1 - 5,
+            15,
+            rent.fit(symbol, estimate, None),
+            TEXT,
+            1,
+        ));
+    }
+    d.push(Draw::text(lx0 + 5, 26, "EVERYONE NOT LISTED", TEXT_DIM));
+    d.push(Draw::rect(lx0 + 4, 36, lx1 - 4, 36, PANEL_LINE));
+    d.push(Draw::text(lx0 + 13, 40, "TENANT", TEXT_DIM));
+    d.push(Draw::text_right(gb_right, 40, "GB", TEXT_DIM, 1));
+    d.push(Draw::text_right(rent_right, 40, "RENT", TEXT_DIM, 1));
+
+    let at = selected
+        .and_then(|s| roll.rest.iter().position(|&t| t == s))
+        .unwrap_or(0);
+    let pages = roll.rest.len().div_ceil(OTHERS_PAGE).max(1);
+    let page = at / OTHERS_PAGE;
+    let mut y = 51;
+    for &t in roll.rest.iter().skip(page * OTHERS_PAGE).take(OTHERS_PAGE) {
+        let tenant = &building.tenants[t];
+        if selected == Some(t) {
+            d.push(Draw::rect(lx0 + 2, y - 2, lx1 - 2, y + 7, PANEL_LINE));
+        }
+        regions.push(Region {
+            x0: lx0 + 1,
+            y0: y - 2,
+            x1: lx1 - 1,
+            y1: y + 7,
+            target: Target::Tenant(t),
+        });
+        let swatch = layout
+            .hue_of(t)
+            .map_or(OTHERS_WALL, |h| HUES[usize::from(h)].wall);
+        d.push(Draw::rect(lx0 + 5, y, lx0 + 9, y + 6, swatch));
+        d.push(Draw::text(
+            lx0 + 13,
+            y,
+            cut(&tenant.name.to_uppercase(), 14),
+            TEXT,
+        ));
+        d.push(Draw::text_right(
+            gb_right,
+            y,
+            gb_text(tenant.rent_bytes),
+            TEXT_DIM,
+            1,
+        ));
+        d.push(Draw::text_right(
+            rent_right,
+            y,
+            column(Shown::rent(micros(
+                tenant.rent_bytes,
+                building.price.per_gb_micros,
+            ))),
+            TEXT,
+            1,
+        ));
+        y += 10;
+    }
+    if pages > 1 {
+        button(
+            d,
+            regions,
+            (lx0 + 5, lx0 + 74),
+            198,
+            &format!("MORE {}/{pages}", page + 1),
+            TEXT,
+            Some(Target::More),
+        );
     }
     button(
         d,
@@ -1632,7 +1806,7 @@ mod tests {
         assert!(has_text(&panel, "BOXES"));
         assert!(has_text(&panel, "OTHERS (3)"));
         // Chrome's boxes are first in the basement, in Chrome's hue.
-        assert_eq!(l.cells[0], Owner::Boxes(Some(0)));
+        assert_eq!(l.cells[0], Owner::Boxes(Holder::Tenant(0)));
         let frame = crate::render::rasterize(WIDTH, HEIGHT, SKY, &panel);
         let (x, y) = cell_xy(0, 5);
         assert_eq!(frame.pixel(x as u32 + 2, y as u32 + 6), HUES[0].wall);
