@@ -145,6 +145,10 @@ pub struct Price {
     pub symbol: String,
     /// `YYYY-MM-DD` date of the price.
     pub as_of: String,
+    /// Priced as another type (LPDDR as DDR, DDR3 as DDR4, or an unknown
+    /// type): the price line marks it.
+    #[serde(default)]
+    pub estimated: bool,
 }
 
 impl Price {
@@ -155,6 +159,7 @@ impl Price {
             per_gb_micros: 14_340_000,
             symbol: "$".into(),
             as_of: "2026-11-03".into(),
+            estimated: false,
         }
     }
 }
@@ -349,6 +354,7 @@ pub(crate) fn test_building(staff: u64, tenants: &[(&str, u64)], vacant: u64) ->
             per_gb_micros: 14_340_000,
             symbol: "$".into(),
             as_of: "2026-11-03".into(),
+            estimated: false,
         },
         capacity_bytes: staff + rent + vacant,
         vacant_bytes: vacant,
