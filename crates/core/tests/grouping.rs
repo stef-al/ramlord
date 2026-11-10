@@ -444,6 +444,50 @@ fn a_process_that_cannot_be_opened_is_staff_though_named() {
     assert!(pc.tenants().is_empty());
 }
 
+/// From the owner's third dump: Sure Click's manager in session 0 (not
+/// opened, 1,187 MiB in RAM, 7 MiB committed) and a micro-VM in the user's
+/// session (opened, under BrHostSvr) are one tenant, and its lease is never
+/// less than its rent.
+#[test]
+fn sure_click_is_one_tenant_and_leases_what_it_holds() {
+    let mut pc = Pc::new();
+    pc.add(6760, 50, None, 20).image_name = Some("BrService.exe".into());
+    pc.0.processes.last_mut().unwrap().session = 0;
+    let manager = pc.add(22576, 6760, None, 0);
+    manager.session = 0;
+    manager.image_name = Some("Br-uxendm.exe".into());
+    manager.working_set_bytes = 1187 * MIB;
+    manager.lease_bytes = 7 * MIB;
+    let host = pc.add(
+        44324,
+        6760,
+        Some(r"C:\Program Files\HP\Sure Click\servers\BrHostSvr.exe"),
+        54,
+    );
+    host.lease_bytes = 65 * MIB;
+    let vm = pc.add(
+        26572,
+        44324,
+        Some(r"C:\Program Files\HP\Sure Click\servers\Br-uxendm.exe"),
+        355,
+    );
+    vm.working_set_bytes = 1398 * MIB;
+    vm.lease_bytes = 1656 * MIB;
+    let g = group(&pc.0, &Rules::builtin());
+    let sure_click: Vec<_> = g
+        .tenants
+        .iter()
+        .filter(|t| t.name == "Sure Click")
+        .collect();
+    assert_eq!(sure_click.len(), 1, "one Sure Click");
+    let t = sure_click[0];
+    assert_eq!(t.process_count, 3);
+    assert_eq!(t.rent_bytes, (1187 + 54 + 1398) * MIB);
+    assert!(t.lease_bytes >= t.rent_bytes);
+    // The manager leases what it holds; the rest their commit.
+    assert_eq!(t.lease_bytes, (1187 + 65 + 1656) * MIB);
+}
+
 /// From the owner's PC: HP Sure Click's micro-VM manager runs in session 0
 /// under its service and holds 1,186 MiB in RAM, none of it private, with
 /// 7 MiB committed. Its whole working set is the guests' rent.

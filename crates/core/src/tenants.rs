@@ -267,14 +267,17 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
             continue;
         };
         let root = grouper.by_pid[&root];
-        // The root's image path in lower case; a process that was not
-        // opened (a VM host) goes by its name.
-        let id = root
-            .image_path
-            .as_deref()
-            .map(str::to_lowercase)
-            .or_else(|| root.exe())
-            .unwrap_or_else(|| "?".into());
+        // The root's image path in lower case. A VM host goes by its name:
+        // its processes are one tenant whether or not they could be opened
+        // (HP Sure Click runs its manager in session 0, unopened, and each
+        // micro-VM in the user's session).
+        let id = if grouper.is_vm_host(root) {
+            root.exe()
+        } else {
+            root.image_path.as_deref().map(str::to_lowercase)
+        }
+        .or_else(|| root.exe())
+        .unwrap_or_else(|| "?".into());
         let p = grouper.by_pid[&pid];
         let tenant = tenants.entry(id.clone()).or_insert_with(|| TenantSample {
             id,
@@ -288,17 +291,21 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
             started_at_ms: 0,
             has_window: false,
         });
-        let rent = if grouper.is_vm_host(p) {
-            p.rent_bytes.max(p.working_set_bytes)
+        // A guest's memory is mapped into its host, not private to it, and
+        // Windows does not charge it to the host's commit: a VM host's rent
+        // is its working set, and its lease at least that.
+        let (rent, lease) = if grouper.is_vm_host(p) {
+            let rent = p.rent_bytes.max(p.working_set_bytes);
+            (rent, p.lease_bytes.max(rent))
         } else {
-            p.rent_bytes
+            (p.rent_bytes, p.lease_bytes)
         };
         tenant.rent_bytes += rent;
-        tenant.lease_bytes += p.lease_bytes;
+        tenant.lease_bytes += lease;
         tenant.process_count += 1;
         tenant.pids.push(pid);
         let gpu = gpu_owned(p);
-        tenant.packed_bytes += p.lease_bytes.saturating_sub(rent).saturating_sub(gpu);
+        tenant.packed_bytes += lease.saturating_sub(rent).saturating_sub(gpu);
         tenant.gpu_bytes += gpu;
         tenant.has_window |= p.has_visible_window;
         if p.started_at_ms > 0

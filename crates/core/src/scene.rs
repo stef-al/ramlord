@@ -1009,11 +1009,13 @@ fn details_panel(
         .saturating_add(tenant.gpu_bytes)
         .saturating_add(boxes);
     let on_paper = tenant.lease_bytes.saturating_sub(held);
+    // The lease never reads less than what is held: with estimated rent
+    // (the whole working set) it could.
     d.push(Draw::text(lx0 + 5, 40, "LEASE", TEXT_DIM));
     d.push(Draw::text_right(
         lx1 - 5,
         40,
-        gb(tenant.lease_bytes),
+        gb(tenant.lease_bytes.max(held)),
         TEXT,
         1,
     ));
