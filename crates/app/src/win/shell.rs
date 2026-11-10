@@ -523,7 +523,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_KEYDOWN => match key(wparam.0 as u16) {
             Some(k) => {
-                input(hwnd, Input::Key(k));
+                // Bit 30: the key was already down. A held key repeats
+                // Up and Down, but never answers a dialog.
+                let repeat = lparam.0 & (1 << 30) != 0;
+                if !(repeat && matches!(k, Key::Enter | Key::Delete)) {
+                    input(hwnd, Input::Key(k));
+                }
                 LRESULT(0)
             }
             // SAFETY: the default handling for other keys.

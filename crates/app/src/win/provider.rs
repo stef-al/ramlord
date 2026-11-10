@@ -358,7 +358,7 @@ fn file_description(path: &str) -> Option<String> {
 
 /// Visible top-level windows: visible, not cloaked, not tool windows and
 /// larger than zero.
-pub(super) fn is_app_window(hwnd: HWND) -> bool {
+fn is_app_window(hwnd: HWND) -> bool {
     // SAFETY: plain queries on a window handle from EnumWindows.
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() {

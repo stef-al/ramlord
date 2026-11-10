@@ -13,9 +13,9 @@ use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
     PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
 };
-use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, PostMessageW, WM_CLOSE};
 
-use super::provider::{Handle, is_app_window, window_pid, windows_of};
+use super::provider::{Handle, window_pid, windows_of};
 
 /// How long a refused TerminateProcess may take to show the process was
 /// already on its way out (Windows refuses a process that is exiting).
@@ -86,14 +86,17 @@ impl Evictor {
             .collect();
     }
 
-    /// Posts WM_CLOSE to every visible top-level window of `pids`.
+    /// Posts WM_CLOSE to every visible top-level window of `pids`, those
+    /// on other virtual desktops included.
     pub fn close(&mut self, pids: &[u32]) -> Report {
         let pids = others(pids);
         self.watch(&pids);
         let pids: BTreeSet<u32> = pids.into_iter().collect();
         let mut posted = 0;
         for hwnd in windows_of(None) {
-            if !is_app_window(hwnd) || !pids.contains(&window_pid(hwnd)) {
+            // SAFETY: a plain query on a window handle from EnumWindows.
+            let visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
+            if !visible || !pids.contains(&window_pid(hwnd)) {
                 continue;
             }
             // SAFETY: posting a message to a window handle from EnumWindows.
