@@ -301,3 +301,52 @@ fn estimated_rent_can_overfill_the_building() {
     assert!(b.rent_is_estimate);
     b.validate().expect("an overfull building is valid");
 }
+
+#[test]
+fn a_vm_host_is_a_tenant_even_in_session_0_and_unopened() {
+    let mut pc = Pc::new();
+    pc.add(1200, 50, Some(r"C:\Windows\System32\vmcompute.exe"), 20)
+        .session = 0;
+    let vm = pc.add(1210, 1200, None, 2048);
+    vm.session = 0;
+    vm.image_name = Some("vmmem".into());
+    let zygote = pc.add(1220, 1200, None, 0);
+    zygote.session = 0;
+    zygote.image_name = Some("vmmemCmZygote".into());
+    assert_eq!(
+        pc.tenants(),
+        [row("Sandbox", 1, 0), row("Virtual machine", 1, 2048)]
+    );
+    assert_eq!(pc.role(1200), Role::Staff);
+    let g = group(&pc.0, &Rules::builtin());
+    assert_eq!(g.tenant_of(1210).unwrap().id, "vmmem");
+}
+
+#[test]
+fn memory_compression_becomes_boxes_and_tenants_show_what_they_packed() {
+    let mut pc = Pc::new();
+    let store = pc.add(1300, 4, None, 0);
+    store.session = 0;
+    store.image_name = Some("MemCompression".into());
+    store.working_set_bytes = 1536 * MIB;
+    let browser = pc.add(200, 100, Some(CHROME), 900);
+    browser.lease_bytes = 2900 * MIB; // 2,000 MiB committed but not in RAM
+    pc.add(201, 200, Some(CHROME), 100).lease_bytes = 50 * MIB; // more in RAM than committed
+    let g = group(&pc.0, &Rules::builtin());
+    assert_eq!(g.boxes_bytes, 1536 * MIB);
+    assert_eq!(g.tenants[0].packed_bytes, 2000 * MIB);
+    let lease = Lease {
+        memory_type: "RAM".into(),
+        price: Price::placeholder(),
+        remark: String::new(),
+    };
+    let b = building(&pc.0, &Rules::builtin(), &lease);
+    b.validate().expect("boxes are part of the sum");
+    assert_eq!(b.boxes_bytes, 1536 * MIB);
+    assert_eq!(
+        b.staff_bytes + b.rent_bytes() + b.boxes_bytes + b.vacant_bytes,
+        b.capacity_bytes
+    );
+    // The boxes come out of what used to be Staff.
+    assert_eq!(b.staff_bytes, 16 * GIB - 6 * GIB - 1000 * MIB - 1536 * MIB);
+}

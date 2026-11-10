@@ -28,6 +28,10 @@ pub struct Rules {
     pub names: BTreeMap<String, String>,
     /// Company words dropped from the front of a FileDescription.
     pub companies: BTreeSet<String>,
+    /// Virtual machine hosts: tenants even in session 0, unopened.
+    pub vm_hosts: BTreeSet<String>,
+    /// The Memory Compression process: the boxes in the basement.
+    pub compression: BTreeSet<String>,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +45,10 @@ struct File {
     names: BTreeMap<String, String>,
     #[serde(default)]
     companies: Vec<String>,
+    #[serde(default)]
+    vm_hosts: Vec<String>,
+    #[serde(default)]
+    compression: Vec<String>,
 }
 
 impl Rules {
@@ -72,6 +80,8 @@ impl Rules {
                 .map(|(image, name)| (image.to_lowercase(), name))
                 .collect(),
             companies: lower(file.companies),
+            vm_hosts: lower(file.vm_hosts),
+            compression: lower(file.compression),
         })
     }
 
@@ -91,6 +101,14 @@ impl Rules {
     pub fn helper(&self, image: &str) -> Option<&Helper> {
         self.helpers.get(image)
     }
+
+    pub fn is_vm_host(&self, image: &str) -> bool {
+        self.vm_hosts.contains(image)
+    }
+
+    pub fn is_compression(&self, image: &str) -> bool {
+        self.compression.contains(image)
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +127,9 @@ mod tests {
         );
         assert_eq!(rules.names["code.exe"], "VS Code");
         assert!(rules.companies.contains("microsoft"));
+        assert!(rules.is_vm_host("vmmem"));
+        assert!(rules.is_compression("memcompression"));
+        assert_eq!(rules.names["vmmem"], "Virtual machine");
         assert_eq!(rules.staff.len(), 17);
         assert_eq!(rules.launchers.len(), 13);
     }

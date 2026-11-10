@@ -139,6 +139,23 @@ fn full_building_timeline_matches_golden_pixel_for_pixel() {
     );
 }
 
+/// The desk PC under memory pressure: compressed memory as boxes in the
+/// basement in their tenants' hues, a VM host as a tenant, a BOXES line in
+/// the rent roll (fixtures/snapshot-packed.json).
+#[test]
+fn packed_snapshot_matches_golden_pixel_for_pixel() {
+    let text = std::fs::read_to_string(repo().join("fixtures/snapshot-packed.json")).unwrap();
+    let snapshot = Snapshot::from_json(&text).unwrap();
+    let b = building(&snapshot, &Rules::builtin(), &Lease::placeholder());
+    b.validate().unwrap();
+    assert!(b.boxes_bytes > 0);
+    let (frame, _) = render_tower(&b, &HueBook::new());
+    assert_same_pixels(
+        &frame.scaled(TOWER_PNG_SCALE),
+        &repo().join("fixtures/golden/snapshot-packed-tower.png"),
+    );
+}
+
 #[test]
 fn same_input_same_pixels() {
     let b = sample();

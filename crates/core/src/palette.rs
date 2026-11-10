@@ -27,6 +27,13 @@ pub const GOOD: Rgb = 0x6ee7a0;
 pub const PANEL: Rgb = 0x14162b;
 pub const PANEL_LINE: Rgb = 0x3b3f5c;
 
+// The basement, where compressed memory sits in boxes (not in SPEC.md's
+// palette: the owner asked for the boxes after M3).
+pub const BASEMENT_WALL: Rgb = 0x2a2433;
+pub const CARDBOARD: Rgb = 0xa47148;
+pub const CARDBOARD_DARK: Rgb = 0x6e4a2c;
+pub const CARDBOARD_TAPE: Rgb = 0xe3c48f;
+
 // The rent roll card.
 pub const PAPER: Rgb = 0xf4f1de;
 pub const INK: Rgb = 0x1b1f3b;

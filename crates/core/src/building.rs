@@ -20,6 +20,9 @@ pub struct Tenant {
     /// Commit charge; shown on the details card only.
     pub lease_bytes: u64,
     pub process_count: u32,
+    /// Committed memory not in RAM now (see `tenants::TenantSample`).
+    #[serde(default)]
+    pub packed_bytes: u64,
     #[serde(default)]
     pub flags: Vec<Flag>,
 }
@@ -104,6 +107,10 @@ pub struct Building {
     /// from rent are shown with a `~` in front.
     #[serde(default)]
     pub rent_is_estimate: bool,
+    /// Tenants' pages kept compressed by Windows: the boxes in the
+    /// basement. Apart from Staff; part of the sum to capacity.
+    #[serde(default)]
+    pub boxes_bytes: u64,
     pub tenants: Vec<Tenant>,
 }
 
@@ -180,6 +187,7 @@ impl Building {
         }
         let sum = u128::from(self.staff_bytes)
             + u128::from(self.vacant_bytes)
+            + u128::from(self.boxes_bytes)
             + self
                 .tenants
                 .iter()
@@ -217,6 +225,7 @@ impl Building {
         let sum = self
             .staff_bytes
             .saturating_add(self.vacant_bytes)
+            .saturating_add(self.boxes_bytes)
             .saturating_add(self.rent_bytes());
         self.capacity_bytes.max(sum)
     }
@@ -259,6 +268,7 @@ pub(crate) fn test_building(staff: u64, tenants: &[(&str, u64)], vacant: u64) ->
         own_bytes: 0,
         remark: String::new(),
         rent_is_estimate: false,
+        boxes_bytes: 0,
         tenants: tenants
             .iter()
             .map(|&(name, rent_bytes)| Tenant {
@@ -267,6 +277,7 @@ pub(crate) fn test_building(staff: u64, tenants: &[(&str, u64)], vacant: u64) ->
                 rent_bytes,
                 lease_bytes: rent_bytes,
                 process_count: 1,
+                packed_bytes: 0,
                 flags: vec![],
             })
             .collect(),

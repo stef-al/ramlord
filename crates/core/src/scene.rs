@@ -76,16 +76,24 @@ pub struct Roll {
     pub vacant: Shown,
     /// RAMlord's own memory, in cents.
     pub office: Shown,
+    /// The boxes in the basement, when there are any.
+    pub boxes: Option<Shown>,
 }
 
 impl Roll {
     pub fn new(building: &Building, layout: &Layout) -> Roll {
         let price = building.price.per_gb_micros;
         let rent = |bytes| Shown::rent(micros(bytes, price));
+        // With a BOXES line below, one tenant row less fits the panel.
+        let listed = if building.boxes_bytes > 0 {
+            ROLL_ROWS - 1
+        } else {
+            ROLL_ROWS
+        };
         let rows: Vec<RollRow> = layout
             .named
             .iter()
-            .take(ROLL_ROWS)
+            .take(listed)
             .map(|n| {
                 let t = &building.tenants[n.tenant];
                 RollRow {
@@ -101,7 +109,7 @@ impl Roll {
         let rest: Vec<usize> = layout
             .named
             .iter()
-            .skip(ROLL_ROWS)
+            .skip(listed)
             .map(|n| n.tenant)
             .chain(layout.merged.iter().copied())
             .collect();
@@ -117,6 +125,7 @@ impl Roll {
             staff: rent(building.staff_bytes),
             vacant: rent(building.vacant_bytes),
             office: Shown::in_cents(micros(building.own_bytes, price)),
+            boxes: (building.boxes_bytes > 0).then(|| rent(building.boxes_bytes)),
         }
     }
 }
@@ -242,6 +251,7 @@ pub fn tower_highlighting(
             _ => None,
         };
         let (wall, window) = match owner {
+            Owner::Boxes(_) => (BASEMENT_WALL, CARDBOARD_TAPE),
             Owner::Vacant => (VACANT_WALL, VACANT_WINDOW),
             Owner::Staff => (STAFF_WALL, STAFF_DETAIL),
             Owner::Others => (OTHERS_WALL, OTHERS_WINDOW),
@@ -254,7 +264,23 @@ pub fn tower_highlighting(
         let in_strip = strip_of(owner)
             .is_some_and(|s| s.floor == floor && s.first_col <= col && col < s.first_col + s.cells);
         let has = |flag| tenant.is_some_and(|t| t.has(flag));
-        if !in_strip {
+        if let Owner::Boxes(whose) = owner {
+            // A box in its tenant's hue, taped down the middle; the shared
+            // stack is plain cardboard.
+            let (body, tape, edge) = match whose.and_then(|t| layout.hue_of(t)) {
+                Some(hue) => {
+                    let hue = HUES[usize::from(hue)];
+                    (hue.wall, hue.window, shade(hue.wall, 70))
+                }
+                None => (CARDBOARD, CARDBOARD_TAPE, CARDBOARD_DARK),
+            };
+            // Wider and lower than a window: it sits on the floor, with a
+            // shaded lid and side.
+            d.push(Draw::rect(x + 1, y + 4, x + 9, y + 9, body));
+            d.push(Draw::rect(x + 1, y + 4, x + 9, y + 4, edge));
+            d.push(Draw::rect(x + 9, y + 4, x + 9, y + 9, edge));
+            d.push(Draw::rect(x + 4, y + 4, x + 5, y + 9, tape));
+        } else if !in_strip {
             if owner == Owner::Staff {
                 // A service panel with a pipe.
                 d.push(Draw::rect(x + 2, y + 2, x + 8, y + 7, STAFF_PANEL));
@@ -350,13 +376,18 @@ pub fn tower_highlighting(
             ));
         }
     }
-    // STAFF on the ground floor, when Staff's ground segment has room.
+    // BOXES on the ground floor, when the basement's first floor has room.
+    let box_units = layout.box_units();
+    if box_units.min(COLS) >= 3 {
+        let (x, y) = cell_xy(0, 0);
+        d.push(Draw::rect(x + 1, y + 1, x + 34, y + 8, BASEMENT_WALL));
+        d.push(Draw::shadowed(x + 3, y + 1, "BOXES", TEXT_DIM, OUTLINE));
+    }
+    // STAFF on Staff's lowest floor, when it has room there.
     if let Some(seg) = layout.segments(Owner::Staff).first()
-        && seg.floor == 0
-        && seg.first_col == 0
         && seg.width() >= 3
     {
-        let (x, y) = cell_xy(0, 0);
+        let (x, y) = cell_xy(seg.floor, seg.first_col);
         d.push(Draw::rect(x + 1, y + 1, x + 34, y + 8, STAFF_WALL));
         d.push(Draw::shadowed(x + 3, y + 1, "STAFF", TEXT_DIM, OUTLINE));
     }
@@ -537,25 +568,35 @@ fn rent_roll_panel(d: &mut Vec<Draw>, building: &Building, layout: &Layout) {
         1,
     ));
     y += 12;
-    // Vacant is measured, not estimated; Staff is what rent leaves.
-    for (swatch, label, bytes, rent, color, estimated) in [
-        (
-            STAFF_WALL,
-            "STAFF",
-            building.staff_bytes,
-            roll.staff,
+    // Vacant is measured, not estimated; Staff is what rent leaves. The
+    // boxes, when there are any, are measured too.
+    let mut lines = vec![(
+        STAFF_WALL,
+        "STAFF",
+        building.staff_bytes,
+        roll.staff,
+        TEXT_DIM,
+        estimate,
+    )];
+    if let Some(boxes) = roll.boxes {
+        lines.push((
+            CARDBOARD,
+            "BOXES",
+            building.boxes_bytes,
+            boxes,
             TEXT_DIM,
-            estimate,
-        ),
-        (
-            VACANT_WINDOW,
-            "VACANT",
-            building.vacant_bytes,
-            roll.vacant,
-            GOOD,
             false,
-        ),
-    ] {
+        ));
+    }
+    lines.push((
+        VACANT_WINDOW,
+        "VACANT",
+        building.vacant_bytes,
+        roll.vacant,
+        GOOD,
+        false,
+    ));
+    for (swatch, label, bytes, rent, color, estimated) in lines {
         d.push(Draw::rect(lx0 + 5, y, lx0 + 9, y + 6, swatch));
         d.push(Draw::text(lx0 + 13, y, label, TEXT_DIM));
         d.push(Draw::text_right(gb_right, y, gb_text(bytes), TEXT_DIM, 1));
@@ -1004,6 +1045,38 @@ mod tests {
         // between Staff and Chrome above column 0 of floor 3 is gold.
         let (x, y) = cell_xy(3, 0);
         assert_eq!(frame.pixel(x as u32 + 5, (y + CELL_H - 1) as u32), GOLD);
+    }
+
+    #[test]
+    fn boxes_take_a_line_of_the_rent_roll_and_the_basement() {
+        let mut b = Building::from_json(SAMPLE).unwrap();
+        b.boxes_bytes = 2048 << 20;
+        b.staff_bytes -= 1024 << 20;
+        b.vacant_bytes -= 1024 << 20;
+        b.tenants[0].packed_bytes = 3000 << 20; // Chrome
+        b.validate().unwrap();
+        let l = layout(&b);
+        let roll = Roll::new(&b, &l);
+        // Nine tenants, the tenth joins Others, and BOXES has a line.
+        assert_eq!(roll.rows.len(), ROLL_ROWS - 1);
+        assert_eq!(roll.others.unwrap().0, 3);
+        assert!(roll.boxes.is_some());
+        let panel = tower(&b, &l);
+        assert!(has_text(&panel, "BOXES"));
+        assert!(has_text(&panel, "OTHERS (3)"));
+        // Chrome's boxes are first in the basement, in Chrome's hue.
+        assert_eq!(l.cells[0], Owner::Boxes(Some(0)));
+        let frame = crate::render::rasterize(WIDTH, HEIGHT, SKY, &panel);
+        let (x, y) = cell_xy(0, 5);
+        assert_eq!(frame.pixel(x as u32 + 2, y as u32 + 6), HUES[0].wall);
+        // The rent owed still adds up the rows shown.
+        let shown = Shown::sum(
+            roll.rows
+                .iter()
+                .map(|r| r.rent)
+                .chain([roll.others.unwrap().2]),
+        );
+        assert_eq!(roll.owed, shown);
     }
 
     #[test]

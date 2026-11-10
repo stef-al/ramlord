@@ -19,6 +19,9 @@ pub enum Owner {
     Tenant(usize),
     Others,
     Vacant,
+    /// Compressed memory in the basement: a named tenant's boxes, or
+    /// everyone else's (None).
+    Boxes(Option<usize>),
 }
 
 /// One entry of the split, in fill order.
@@ -173,6 +176,46 @@ pub fn assign_hues(ids_in_fill_order: &[&str], saved: &HueBook) -> HueBook {
     book
 }
 
+/// Splits the boxes among tenants by their packed memory (committed but
+/// not in RAM), the best estimate Windows allows of whose pages are
+/// compressed. A named tenant whose share is at least half a unit gets its
+/// own boxes, largest first; the rest share one stack. With no packed
+/// memory at all, the boxes are nobody's in particular.
+pub fn box_shares(building: &Building, named: &[usize]) -> Vec<(Option<usize>, u64)> {
+    let total = building.boxes_bytes;
+    if total == 0 {
+        return Vec::new();
+    }
+    let packed: u128 = building
+        .tenants
+        .iter()
+        .map(|t| u128::from(t.packed_bytes))
+        .sum();
+    if packed == 0 {
+        return vec![(None, total)];
+    }
+    let capacity = u128::from(building.split_bytes().max(1));
+    let mut own: Vec<(usize, u64)> = named
+        .iter()
+        .map(|&t| {
+            let share = u128::from(total) * u128::from(building.tenants[t].packed_bytes) / packed;
+            (t, share as u64)
+        })
+        .filter(|&(_, share)| 2 * u128::from(share) * UNITS as u128 >= capacity)
+        .collect();
+    own.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| building.tenants[a.0].name.cmp(&building.tenants[b.0].name))
+    });
+    let rest = total - own.iter().map(|&(_, share)| share).sum::<u64>();
+    let mut shares: Vec<(Option<usize>, u64)> =
+        own.into_iter().map(|(t, b)| (Some(t), b)).collect();
+    if rest > 0 {
+        shares.push((None, rest));
+    }
+    shares
+}
+
 impl Layout {
     /// Divides `building` (rules 1 to 6) and gives every named tenant a hue.
     /// Returns the layout and the hue book with any new tenants added.
@@ -197,12 +240,22 @@ impl Layout {
             named.sort_by_key(place);
         }
 
-        // Rule 3: fill order is Staff, named tenants, Others, Vacant.
-        let mut entries = vec![Entry {
+        // Rule 3: fill order is Staff, named tenants, Others, Vacant. The
+        // boxes go first, in the basement: they are tenants' memory, kept
+        // compressed by Windows.
+        let mut entries: Vec<Entry> = box_shares(building, &named)
+            .into_iter()
+            .map(|(tenant, bytes)| Entry {
+                owner: Owner::Boxes(tenant),
+                bytes,
+                units: 0,
+            })
+            .collect();
+        entries.push(Entry {
             owner: Owner::Staff,
             bytes: building.staff_bytes,
             units: 0,
-        }];
+        });
         entries.extend(named.iter().map(|&t| Entry {
             owner: Owner::Tenant(t),
             bytes: building.tenants[t].rent_bytes,
@@ -262,6 +315,14 @@ impl Layout {
             .sum()
     }
 
+    /// Units in the basement, everyone's boxes together.
+    pub fn box_units(&self) -> usize {
+        self.cells
+            .iter()
+            .filter(|o| matches!(o, Owner::Boxes(_)))
+            .count()
+    }
+
     /// The hue of a named tenant.
     pub fn hue_of(&self, tenant: usize) -> Option<u8> {
         self.named
@@ -316,6 +377,7 @@ mod tests {
                     Owner::Tenant(t) => b.tenants[t].name.clone(),
                     Owner::Others => "Others".to_string(),
                     Owner::Vacant => "Vacant".to_string(),
+                    Owner::Boxes(_) => "Boxes".to_string(),
                 };
                 (label, e.units)
             })
@@ -583,6 +645,53 @@ mod tests {
             layout.cells[layout.units_of(Owner::Staff) as usize],
             Owner::Tenant(1)
         );
+    }
+
+    #[test]
+    fn boxes_go_to_the_basement_split_by_packed_memory() {
+        // 8 GiB: a unit is 32 MiB. 1 GiB of boxes; A packed 3 GiB, B 1 GiB,
+        // C 10 MiB (too little for boxes of its own).
+        let mut b = building(
+            1000 * MIB,
+            &[("A", 2000 * MIB), ("B", 1000 * MIB), ("C", 100 * MIB)],
+            3068 * MIB,
+        );
+        b.boxes_bytes = 1024 * MIB;
+        b.capacity_bytes += 1024 * MIB;
+        b.tenants[0].packed_bytes = 3072 * MIB;
+        b.tenants[1].packed_bytes = 1024 * MIB;
+        b.tenants[2].packed_bytes = 10 * MIB;
+        b.validate().unwrap();
+        let (named, _) = split_named(&b);
+        let shares = box_shares(&b, &named);
+        let total_packed = 4106u128;
+        let a = (1024u128 * MIB as u128 * 3072 / total_packed) as u64;
+        let bb = (1024u128 * MIB as u128 * 1024 / total_packed) as u64;
+        assert_eq!(
+            shares,
+            [(Some(0), a), (Some(1), bb), (None, 1024 * MIB - a - bb)]
+        );
+
+        let (layout, _) = Layout::new(&b, &HueBook::new());
+        assert_eq!(layout.entries[0].owner, Owner::Boxes(Some(0)));
+        assert_eq!(layout.cells[0], Owner::Boxes(Some(0)));
+        // 8 GiB: a unit is 32 MiB. A's boxes (23.9 units) and B's (7.98)
+        // round up to 24 and 8; the shared stack (2.5 MiB) gets one unit
+        // by rule 5.
+        assert_eq!(layout.box_units(), 33);
+        assert_eq!(layout.units_of(Owner::Boxes(None)), 1);
+        assert_eq!(layout.entries.iter().map(|e| e.units).sum::<u32>(), 256);
+    }
+
+    #[test]
+    fn boxes_with_nothing_packed_are_nobodys() {
+        let mut b = building(1000 * MIB, &[("A", 2000 * MIB)], 4168 * MIB);
+        b.boxes_bytes = 1024 * MIB;
+        b.capacity_bytes += 1024 * MIB;
+        let (named, _) = split_named(&b);
+        assert_eq!(box_shares(&b, &named), [(None, 1024 * MIB)]);
+        b.boxes_bytes = 0;
+        assert!(box_shares(&b, &named).is_empty());
     }
 
     #[test]

@@ -13,6 +13,12 @@
 //! 4. Helpers: `parent` follows the parent even if it is a launcher (Staff
 //!    if the parent is Staff); an image such as `steam.exe` joins that
 //!    tenant if it exists.
+//!
+//! Two additions the owner asked for: a virtual machine host (`vm_hosts`,
+//! such as `vmmem`) is a tenant of its own even in session 0, since its
+//! memory is a guest's; and the Memory Compression process (`compression`)
+//! holds tenants' pages compressed, which the tower shows as boxes in the
+//! basement rather than as Staff.
 
 use std::collections::BTreeMap;
 
@@ -40,6 +46,11 @@ pub struct TenantSample {
     pub process_count: u32,
     /// Member processes, lowest pid first.
     pub pids: Vec<u32>,
+    /// Committed private memory that is not in RAM now: compressed in the
+    /// basement, written to the page file, or never touched. Summed over
+    /// the members of max(commit - private working set, 0). An estimate:
+    /// Windows does not tell which pages of a process are compressed.
+    pub packed_bytes: u64,
     /// When its oldest member started (0 when unknown).
     pub started_at_ms: u64,
     /// Any member owns a visible window.
@@ -55,6 +66,8 @@ pub struct Grouping {
     pub roles: BTreeMap<u32, Role>,
     /// RAMlord's own rent: the `MY OFFICE` line. It is part of Staff.
     pub own_bytes: u64,
+    /// The Memory Compression process's working set: the boxes.
+    pub boxes_bytes: u64,
 }
 
 impl Grouping {
@@ -86,12 +99,19 @@ struct Grouper<'a> {
 impl<'a> Grouper<'a> {
     /// Staff no matter what its parent is.
     fn hard_staff(&self, p: &Process) -> bool {
+        if self.is_vm_host(p) {
+            return false;
+        }
         p.is_self
             || p.session == 0
             || match p.exe() {
                 None => true,
                 Some(name) => self.rules.is_staff(&name),
             }
+    }
+
+    fn is_vm_host(&self, p: &Process) -> bool {
+        p.exe().is_some_and(|n| self.rules.is_vm_host(&n))
     }
 
     /// The parent, if it is alive and older than `p` (otherwise the pid was
@@ -120,6 +140,9 @@ impl<'a> Grouper<'a> {
         let p = self.by_pid[&pid];
         if self.hard_staff(p) {
             return Role::Staff;
+        }
+        if self.is_vm_host(p) {
+            return Role::Root(pid);
         }
         let name = p.exe().unwrap_or_default();
         match self.rules.helper(&name).cloned() {
@@ -228,7 +251,14 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
             continue;
         };
         let root = grouper.by_pid[&root];
-        let id = root.image_path.as_deref().unwrap_or("?").to_lowercase();
+        // The root's image path in lower case; a process that was not
+        // opened (a VM host) goes by its name.
+        let id = root
+            .image_path
+            .as_deref()
+            .map(str::to_lowercase)
+            .or_else(|| root.exe())
+            .unwrap_or_else(|| "?".into());
         let p = grouper.by_pid[&pid];
         let tenant = tenants.entry(id.clone()).or_insert_with(|| TenantSample {
             id,
@@ -237,6 +267,7 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
             lease_bytes: 0,
             process_count: 0,
             pids: Vec::new(),
+            packed_bytes: 0,
             started_at_ms: 0,
             has_window: false,
         });
@@ -244,6 +275,7 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
         tenant.lease_bytes += p.lease_bytes;
         tenant.process_count += 1;
         tenant.pids.push(pid);
+        tenant.packed_bytes += p.lease_bytes.saturating_sub(p.rent_bytes);
         tenant.has_window |= p.has_visible_window;
         if p.started_at_ms > 0
             && (tenant.started_at_ms == 0 || p.started_at_ms < tenant.started_at_ms)
@@ -257,10 +289,17 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
         .filter(|p| p.is_self)
         .map(|p| p.rent_bytes)
         .sum();
+    let boxes_bytes = snapshot
+        .processes
+        .iter()
+        .filter(|p| p.exe().is_some_and(|n| rules.is_compression(&n)))
+        .map(|p| p.rent_bytes.max(p.working_set_bytes))
+        .sum();
     Grouping {
         tenants: tenants.into_values().collect(),
         roles: grouper.roles,
         own_bytes,
+        boxes_bytes,
     }
 }
 
@@ -304,7 +343,12 @@ pub fn building(snapshot: &Snapshot, rules: &Rules, lease: &Lease) -> Building {
 /// The Building for a snapshot already grouped.
 pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Building {
     let rent = grouping.rent_bytes();
-    let (staff, vacant) = balance(snapshot.capacity_bytes, snapshot.available_bytes, rent);
+    let boxes = grouping.boxes_bytes;
+    let (staff, vacant) = balance(
+        snapshot.capacity_bytes,
+        snapshot.available_bytes,
+        rent.saturating_add(boxes),
+    );
     Building {
         kind: "building".into(),
         date: Date::from_unix_ms(snapshot.at_ms).iso(),
@@ -316,6 +360,7 @@ pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Bu
         own_bytes: grouping.own_bytes,
         remark: lease.remark.clone(),
         rent_is_estimate: snapshot.rent_is_estimate,
+        boxes_bytes: boxes,
         tenants: grouping
             .tenants
             .into_iter()
@@ -325,6 +370,7 @@ pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Bu
                 rent_bytes: t.rent_bytes,
                 lease_bytes: t.lease_bytes,
                 process_count: t.process_count,
+                packed_bytes: t.packed_bytes,
                 flags: Vec::new(),
             })
             .collect(),

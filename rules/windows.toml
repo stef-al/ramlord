@@ -18,6 +18,15 @@ companies = ["adobe", "amd", "apple", "asus", "brave", "dell", "google", "hp", "
   "lenovo", "logitech", "microsoft", "mozilla", "nvidia", "opera", "oracle", "realtek",
   "valve"]
 
+# Virtual machine hosts. vmmem holds a virtual machine's memory (WSL,
+# Hyper-V, Windows Sandbox and other containers). They run in session 0
+# and cannot be opened, but that memory is a guest's, so each is a tenant.
+vm_hosts = ["vmmem", "vmmemcmzygote", "vmmemcmfirstboot", "vmmemwsa"]
+
+# The Memory Compression process holds tenants' pages, compressed: the
+# boxes in the basement. Its working set is shown apart from Staff.
+compression = ["memcompression", "memory compression"]
+
 [helpers]
 "msedgewebview2.exe" = "parent"
 "crashpad_handler.exe" = "parent"
@@ -39,3 +48,7 @@ companies = ["adobe", "amd", "apple", "asus", "brave", "dell", "google", "hp", "
 "steam.exe" = "Steam"
 "onedrive.exe" = "OneDrive"
 "windowsterminal.exe" = "Terminal"
+"vmmem" = "Virtual machine"
+"vmmemcmzygote" = "Sandbox"
+"vmmemcmfirstboot" = "Sandbox"
+"vmmemwsa" = "Android"

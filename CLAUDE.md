@@ -42,8 +42,9 @@ cargo run -p ramlord -- --snapshot fixtures/snapshot-desk.json --render desk.png
 
 When a rendering change is intended, regenerate the golden images with the
 same commands into `fixtures/golden/` (`sample-tower.png`,
-`sample-rent-roll.png`, `snapshot-desk-tower.png`), look at them, and say in
-the commit what changed and why. `timeline-full-tower.png` is the last frame
+`sample-rent-roll.png`, `snapshot-desk-tower.png`, `snapshot-packed-tower.png`
+from `fixtures/snapshot-packed.json`), look at them, and say in the commit
+what changed and why. `timeline-full-tower.png` is the last frame
 of `fixtures/timelines/full.json`; write it, and a frame at every checkpoint
 of every timeline, with:
 

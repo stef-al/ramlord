@@ -37,6 +37,7 @@ fn label(building: &Building, owner: Owner) -> &str {
         Owner::Tenant(t) => &building.tenants[t].name,
         Owner::Others => "Others",
         Owner::Vacant => "Vacant",
+        Owner::Boxes(_) => "Boxes",
     }
 }
 

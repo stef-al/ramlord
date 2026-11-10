@@ -9,8 +9,9 @@
 //! | 2 | Leak | A tenant gains LEAK |
 //! | 3 | Squatters | Once per sign-in, when the first tenant gains SQUAT |
 //! | 4 | Not home | A tenant holding at least 500 MB gains AWAY |
-//! | 5 | All calm | Vacant over 50% |
-//! | 6 | Small talk | Otherwise, a new line every 60 seconds |
+//! | 5 | Packed | Boxes in the basement hold at least 5% of the building (added after M3) |
+//! | 6 | All calm | Vacant over 50% |
+//! | 7 | Small talk | Otherwise, a new line every 60 seconds |
 
 use crate::building::{Building, Flag};
 use crate::flags::Gained;
@@ -32,8 +33,9 @@ pub enum Kind {
     Leak = 2,
     Squatters = 3,
     NotHome = 4,
-    Calm = 5,
-    SmallTalk = 6,
+    Packed = 5,
+    Calm = 6,
+    SmallTalk = 7,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +114,22 @@ pub fn leak_text(name: &str, from_bytes: u64, to_bytes: u64) -> String {
     with_name(name, |n| {
         format!("{n} keeps knocking down walls: {a} to {b} GB.")
     })
+}
+
+/// The boxes in the basement, and the tenant with the most packed memory.
+pub fn packed_text(building: &Building) -> String {
+    let gb = gb_text(building.boxes_bytes);
+    let top = building
+        .tenants
+        .iter()
+        .filter(|t| t.packed_bytes > 0 && !t.has(Flag::Family))
+        .max_by_key(|t| t.packed_bytes);
+    match top {
+        Some(t) => with_name(&t.name, |n| {
+            format!("{gb} GB in boxes in the basement, mostly {n}'s.")
+        }),
+        None => format!("{gb} GB of tenants' things sit in boxes in the basement."),
+    }
 }
 
 pub fn squatters_text(count: usize) -> String {
@@ -247,6 +265,7 @@ impl Remarks {
                 .low_since
                 .is_some_and(|since| now - since >= FULL_AFTER_MS);
         let calm = vacant * 2 > capacity;
+        let packed = u128::from(building.boxes_bytes) * 20 >= capacity && building.boxes_bytes > 0;
         let highlight = building
             .tenants
             .iter()
@@ -264,6 +283,8 @@ impl Remarks {
             Kind::Full
         } else if let Some(kind) = self.queue.iter().map(|r| r.kind).min() {
             kind
+        } else if packed {
+            Kind::Packed
         } else if calm {
             Kind::Calm
         } else {
@@ -271,7 +292,7 @@ impl Remarks {
         };
         let keep = hold
             || self.current.as_ref().is_some_and(|s| match next {
-                Kind::Full | Kind::Calm => s.remark.kind == next,
+                Kind::Full | Kind::Packed | Kind::Calm => s.remark.kind == next,
                 Kind::SmallTalk => {
                     s.remark.kind == next && now.saturating_sub(s.since) < SMALL_TALK_MS
                 }
@@ -294,6 +315,11 @@ impl Remarks {
                 Kind::Calm => Remark {
                     kind: Kind::Calm,
                     text: calm_text(),
+                    tenant: None,
+                },
+                Kind::Packed => Remark {
+                    kind: Kind::Packed,
+                    text: packed_text(building),
                     tenant: None,
                 },
                 Kind::SmallTalk => {
@@ -398,6 +424,13 @@ mod tests {
         for text in [
             leak_text(long, 12_345 * MIB, 19_999 * MIB),
             not_home_text(long, 400 * 24 * 3_600_000),
+            {
+                let mut b = building(1000);
+                b.boxes_bytes = 12_345 * MIB;
+                b.tenants[0].name = long.into();
+                b.tenants[0].packed_bytes = 1;
+                packed_text(&b)
+            },
             squatters_text(12_345),
             full_text(),
             calm_text(),
@@ -587,6 +620,36 @@ mod tests {
         assert_eq!(
             r.update(&cleared, &sample(30_000, &[]), &mut told).kind,
             Kind::SmallTalk
+        );
+    }
+
+    #[test]
+    fn packed_boxes_speak_after_events_and_before_calm() {
+        let mut r = Remarks::new();
+        let mut told = None;
+        // 9,000 MiB vacant of 16 GiB is calm; 1 GiB of boxes is 6%.
+        let mut b = building(9_000);
+        b.boxes_bytes = 1024 * MIB;
+        b.staff_bytes -= 1024 * MIB;
+        b.tenants[1].packed_bytes = 700 * MIB;
+        b.tenants[0].packed_bytes = 300 * MIB;
+        b.validate().unwrap();
+        let remark = r.update(&b, &sample(0, &[]), &mut told);
+        assert_eq!(remark.kind, Kind::Packed);
+        assert_eq!(remark.text, "1.0 GB in boxes in the basement, mostly B's.");
+        // Under 5%: calm again.
+        b.boxes_bytes = 800 * MIB;
+        b.staff_bytes += 224 * MIB;
+        assert_eq!(
+            r.update(&b, &sample(30_000, &[]), &mut told).kind,
+            Kind::Calm
+        );
+        // Nothing packed anywhere: the boxes are nobody's in particular.
+        let mut none = building(9_000);
+        none.boxes_bytes = 1024 * MIB;
+        assert_eq!(
+            packed_text(&none),
+            "1.0 GB of tenants' things sit in boxes in the basement."
         );
     }
 

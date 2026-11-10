@@ -19,6 +19,7 @@ pub const LEAD_MS: u64 = 30_000;
 struct Sample {
     at_ms: u64,
     vacant: u64,
+    boxes: u64,
     rents: BTreeMap<String, u64>,
 }
 
@@ -51,6 +52,7 @@ impl Smoother {
         self.samples.push_back(Sample {
             at_ms,
             vacant: current.vacant_bytes,
+            boxes: current.boxes_bytes,
             rents: current
                 .tenants
                 .iter()
@@ -79,9 +81,15 @@ impl Smoother {
             tenant.rent_bytes = average(&|s| s.rents.get(&tenant.id).copied().unwrap_or(0));
         }
         let vacant = average(&|s| s.vacant);
-        let (staff, vacant) = balance(smoothed.capacity_bytes, vacant, smoothed.rent_bytes());
+        let boxes = average(&|s| s.boxes);
+        let (staff, vacant) = balance(
+            smoothed.capacity_bytes,
+            vacant,
+            smoothed.rent_bytes().saturating_add(boxes),
+        );
         smoothed.staff_bytes = staff;
         smoothed.vacant_bytes = vacant;
+        smoothed.boxes_bytes = boxes;
         smoothed
     }
 
