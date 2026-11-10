@@ -156,6 +156,23 @@ fn packed_snapshot_matches_golden_pixel_for_pixel() {
     );
 }
 
+/// The desk PC on a busier evening, with the new counters: the gallery
+/// (graphics memory in RAM) in its tenants' hues right above the boxes, a
+/// GALLERY line in the rent roll (fixtures/snapshot-gallery.json).
+#[test]
+fn gallery_snapshot_matches_golden_pixel_for_pixel() {
+    let text = std::fs::read_to_string(repo().join("fixtures/snapshot-gallery.json")).unwrap();
+    let snapshot = Snapshot::from_json(&text).unwrap();
+    let b = building(&snapshot, &Rules::builtin(), &Lease::placeholder());
+    b.validate().unwrap();
+    assert!(b.gallery_bytes > 0 && b.boxes_bytes > 0);
+    let (frame, _) = render_tower(&b, &HueBook::new());
+    assert_same_pixels(
+        &frame.scaled(TOWER_PNG_SCALE),
+        &repo().join("fixtures/golden/snapshot-gallery-tower.png"),
+    );
+}
+
 #[test]
 fn same_input_same_pixels() {
     let b = sample();

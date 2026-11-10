@@ -322,6 +322,44 @@ fn a_vm_host_is_a_tenant_even_in_session_0_and_unopened() {
     assert_eq!(g.tenant_of(1210).unwrap().id, "vmmem");
 }
 
+/// Graphics memory in RAM is the gallery: each tenant's from its
+/// processes, the total from the adapters, apart from Staff. Staff's parts
+/// come from the counters, and the rest is SHARED, OTHER.
+#[test]
+fn graphics_memory_hangs_in_the_gallery_and_staff_breaks_down() {
+    let mut pc = Pc::new();
+    pc.0.physical_total_bytes = 16 * GIB - 368 * MIB;
+    pc.0.kernel_nonpaged_bytes = 400 * MIB;
+    pc.0.kernel_paged_resident_bytes = 300 * MIB;
+    pc.0.driver_bytes = 60 * MIB;
+    pc.0.kernel_code_bytes = 20 * MIB;
+    pc.0.file_cache_bytes = 250 * MIB;
+    pc.0.modified_bytes = 100 * MIB;
+    pc.0.gpu_shared_bytes = 1600 * MIB; // more than the processes' sum
+    pc.add(200, 100, Some(CHROME), 900);
+    pc.add(201, 200, Some(CHROME), 60).gpu_shared_bytes = 1000 * MIB;
+    let dwm = pc.add(90, 4, Some(r"C:\Windows\System32\dwm.exe"), 150);
+    dwm.gpu_shared_bytes = 300 * MIB;
+    let g = group(&pc.0, &Rules::builtin());
+    assert_eq!(g.gallery_bytes, 1600 * MIB);
+    let chrome = g.tenant_of(200).unwrap();
+    assert_eq!(chrome.gpu_bytes, 1000 * MIB);
+    let b = building(&pc.0, &Rules::builtin(), &Lease::placeholder());
+    b.validate().expect("the gallery is part of the sum");
+    assert_eq!(b.gallery_bytes, 1600 * MIB);
+    // Used memory is 10 GiB: Chrome's 960 MiB rent and the gallery come
+    // out of what used to be Staff.
+    assert_eq!(b.staff_bytes, 10 * GIB - 960 * MIB - 1600 * MIB);
+    let parts = &b.staff_parts;
+    assert_eq!(parts.services_bytes, (30 + 120 + 150) * MIB); // svchost, explorer, dwm
+    assert_eq!(parts.hardware_bytes, 368 * MIB);
+    assert_eq!(parts.kernel_pool_bytes, 700 * MIB);
+    assert_eq!(parts.drivers_bytes, 80 * MIB);
+    assert_eq!(parts.file_cache_bytes, 250 * MIB);
+    assert_eq!(parts.modified_bytes, 100 * MIB);
+    assert_eq!(parts.sum(), b.staff_bytes);
+}
+
 /// From the owner's PC: HP Sure Click's micro-VM manager runs in session 0
 /// under its service and holds 1,186 MiB in RAM, none of it private, with
 /// 7 MiB committed. Its whole working set is the guests' rent.

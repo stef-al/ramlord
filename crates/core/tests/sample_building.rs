@@ -38,6 +38,7 @@ fn label(building: &Building, owner: Owner) -> &str {
         Owner::Others => "Others",
         Owner::Vacant => "Vacant",
         Owner::Boxes(_) => "Boxes",
+        Owner::Gallery(_) => "Gallery",
     }
 }
 

@@ -1,5 +1,7 @@
 //! Dividing the building: 256 units shared by Staff, the named tenants,
-//! Others and Vacant (SPEC.md, The tower). Integer bytes throughout.
+//! Others and Vacant (SPEC.md, The tower), plus two parts the owner asked
+//! for: the boxes in the basement (compressed memory) and the gallery
+//! (graphics memory in RAM). Integer bytes throughout.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +24,9 @@ pub enum Owner {
     /// Compressed memory in the basement: a named tenant's boxes, or
     /// everyone else's (None).
     Boxes(Option<usize>),
+    /// Graphics memory in RAM: a named tenant's pictures, or everyone
+    /// else's (None), Windows' own included.
+    Gallery(Option<usize>),
 }
 
 /// One entry of the split, in fill order.
@@ -176,44 +181,76 @@ pub fn assign_hues(ids_in_fill_order: &[&str], saved: &HueBook) -> HueBook {
     book
 }
 
-/// Splits the boxes among tenants by their packed memory (committed but
-/// not in RAM), the best estimate Windows allows of whose pages are
-/// compressed. A named tenant whose share is at least half a unit gets its
-/// own boxes, largest first; the rest share one stack. With no packed
-/// memory at all, the boxes are nobody's in particular.
-pub fn box_shares(building: &Building, named: &[usize]) -> Vec<(Option<usize>, u64)> {
-    let total = building.boxes_bytes;
-    if total == 0 {
-        return Vec::new();
-    }
+/// A tenant's estimated share of the boxes: the boxes split by packed
+/// memory (committed but not in RAM), the best estimate Windows allows of
+/// whose pages are compressed.
+pub fn box_share(building: &Building, tenant: usize) -> u64 {
     let packed: u128 = building
         .tenants
         .iter()
         .map(|t| u128::from(t.packed_bytes))
         .sum();
     if packed == 0 {
-        return vec![(None, total)];
+        return 0;
+    }
+    (u128::from(building.boxes_bytes) * u128::from(building.tenants[tenant].packed_bytes) / packed)
+        as u64
+}
+
+/// Splits `total` among the named tenants by `share_of`. One whose share
+/// is at least half a unit gets its own, largest first; the rest is
+/// everyone else's (None). Shares never add up to more than `total`.
+fn shares(
+    building: &Building,
+    named: &[usize],
+    total: u64,
+    share_of: impl Fn(usize) -> u64,
+) -> Vec<(Option<usize>, u64)> {
+    if total == 0 {
+        return Vec::new();
     }
     let capacity = u128::from(building.split_bytes().max(1));
     let mut own: Vec<(usize, u64)> = named
         .iter()
-        .map(|&t| {
-            let share = u128::from(total) * u128::from(building.tenants[t].packed_bytes) / packed;
-            (t, share as u64)
-        })
+        .map(|&t| (t, share_of(t)))
         .filter(|&(_, share)| 2 * u128::from(share) * UNITS as u128 >= capacity)
         .collect();
     own.sort_by(|a, b| {
         b.1.cmp(&a.1)
             .then_with(|| building.tenants[a.0].name.cmp(&building.tenants[b.0].name))
     });
-    let rest = total - own.iter().map(|&(_, share)| share).sum::<u64>();
-    let mut shares: Vec<(Option<usize>, u64)> =
-        own.into_iter().map(|(t, b)| (Some(t), b)).collect();
-    if rest > 0 {
-        shares.push((None, rest));
+    let mut left = total;
+    let mut shares: Vec<(Option<usize>, u64)> = own
+        .into_iter()
+        .map(|(t, share)| {
+            let share = share.min(left);
+            left -= share;
+            (Some(t), share)
+        })
+        .filter(|&(_, share)| share > 0)
+        .collect();
+    if left > 0 {
+        shares.push((None, left));
     }
     shares
+}
+
+/// The boxes, split by `box_share`. With no packed memory at all, they
+/// are nobody's in particular.
+pub fn box_shares(building: &Building, named: &[usize]) -> Vec<(Option<usize>, u64)> {
+    shares(building, named, building.boxes_bytes, |t| {
+        box_share(building, t)
+    })
+}
+
+/// The gallery, split by what each tenant's processes hold: Windows
+/// reports graphics memory per process, so this is measured, not
+/// estimated. The rest is Windows' own (the desktop's windows) and
+/// everyone else's.
+pub fn gallery_shares(building: &Building, named: &[usize]) -> Vec<(Option<usize>, u64)> {
+    shares(building, named, building.gallery_bytes, |t| {
+        building.tenants[t].gpu_bytes
+    })
 }
 
 impl Layout {
@@ -242,7 +279,8 @@ impl Layout {
 
         // Rule 3: fill order is Staff, named tenants, Others, Vacant. The
         // boxes go first, in the basement: they are tenants' memory, kept
-        // compressed by Windows.
+        // compressed by Windows. The gallery comes next, on the ground
+        // floors: tenants' pictures, kept by the graphics adapter in RAM.
         let mut entries: Vec<Entry> = box_shares(building, &named)
             .into_iter()
             .map(|(tenant, bytes)| Entry {
@@ -251,6 +289,15 @@ impl Layout {
                 units: 0,
             })
             .collect();
+        entries.extend(
+            gallery_shares(building, &named)
+                .into_iter()
+                .map(|(tenant, bytes)| Entry {
+                    owner: Owner::Gallery(tenant),
+                    bytes,
+                    units: 0,
+                }),
+        );
         entries.push(Entry {
             owner: Owner::Staff,
             bytes: building.staff_bytes,
@@ -323,6 +370,14 @@ impl Layout {
             .count()
     }
 
+    /// Units of the gallery, everyone's pictures together.
+    pub fn gallery_units(&self) -> usize {
+        self.cells
+            .iter()
+            .filter(|o| matches!(o, Owner::Gallery(_)))
+            .count()
+    }
+
     /// The hue of a named tenant.
     pub fn hue_of(&self, tenant: usize) -> Option<u8> {
         self.named
@@ -378,6 +433,7 @@ mod tests {
                     Owner::Others => "Others".to_string(),
                     Owner::Vacant => "Vacant".to_string(),
                     Owner::Boxes(_) => "Boxes".to_string(),
+                    Owner::Gallery(_) => "Gallery".to_string(),
                 };
                 (label, e.units)
             })
@@ -681,6 +737,51 @@ mod tests {
         assert_eq!(layout.box_units(), 33);
         assert_eq!(layout.units_of(Owner::Boxes(None)), 1);
         assert_eq!(layout.entries.iter().map(|e| e.units).sum::<u32>(), 256);
+    }
+
+    #[test]
+    fn the_gallery_hangs_after_the_boxes_split_by_measured_graphics_memory() {
+        // 8 GiB: a unit is 32 MiB. A holds 640 MiB of pictures (20 units),
+        // B 8 MiB (too few for its own), Windows the rest of 1 GiB.
+        let mut b = building(
+            3072 * MIB,
+            &[("A", 3072 * MIB), ("B", 1024 * MIB)],
+            1024 * MIB,
+        );
+        b.staff_bytes -= 1024 * MIB + 256 * MIB;
+        b.gallery_bytes = 1024 * MIB;
+        b.boxes_bytes = 256 * MIB;
+        b.tenants[0].gpu_bytes = 640 * MIB;
+        b.tenants[1].gpu_bytes = 8 * MIB;
+        b.tenants[0].packed_bytes = 1;
+        b.validate().unwrap();
+        let (layout, _) = Layout::new(&b, &HueBook::new());
+        let owners: Vec<Owner> = layout.entries.iter().map(|e| e.owner).collect();
+        assert_eq!(
+            owners[..4],
+            [
+                Owner::Boxes(Some(0)),
+                Owner::Gallery(Some(0)),
+                Owner::Gallery(None),
+                Owner::Staff
+            ]
+        );
+        assert_eq!(layout.units_of(Owner::Gallery(Some(0))), 20);
+        assert_eq!(layout.units_of(Owner::Gallery(None)), 12);
+        assert_eq!(layout.gallery_units(), 32);
+        // The boxes are first, in the basement; the gallery right above.
+        assert_eq!(layout.cells[0], Owner::Boxes(Some(0)));
+        assert_eq!(layout.cells[8], Owner::Gallery(Some(0)));
+    }
+
+    #[test]
+    fn gallery_shares_never_exceed_the_gallery() {
+        // A building file may claim more pictures than the gallery holds.
+        let mut b = building(2048 * MIB, &[("A", 3072 * MIB)], 3072 * MIB);
+        b.staff_bytes -= 512 * MIB;
+        b.gallery_bytes = 512 * MIB;
+        b.tenants[0].gpu_bytes = 900 * MIB;
+        assert_eq!(gallery_shares(&b, &[0]), [(Some(0), 512 * MIB)]);
     }
 
     #[test]

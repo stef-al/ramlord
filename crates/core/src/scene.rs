@@ -6,7 +6,7 @@
 use crate::building::{Building, Flag, Tenant};
 use crate::font::{ADVANCE, UP_ARROW};
 use crate::format::{Shown, cut, gb_text, micros, price_text, whole_gb, whole_mb, wrap_balanced};
-use crate::layout::{COLS, FLOORS, Layout, Owner};
+use crate::layout::{COLS, FLOORS, Layout, Owner, box_share};
 use crate::palette::*;
 use crate::render::Draw;
 use crate::ui::{Eviction, Region, Target};
@@ -79,18 +79,19 @@ pub struct Roll {
     pub office: Shown,
     /// The boxes in the basement, when there are any.
     pub boxes: Option<Shown>,
+    /// The gallery, when there is one.
+    pub gallery: Option<Shown>,
 }
 
 impl Roll {
     pub fn new(building: &Building, layout: &Layout) -> Roll {
         let price = building.price.per_gb_micros;
         let rent = |bytes| Shown::rent(micros(bytes, price));
-        // With a BOXES line below, one tenant row less fits the panel.
-        let listed = if building.boxes_bytes > 0 {
-            ROLL_ROWS - 1
-        } else {
-            ROLL_ROWS
-        };
+        // For each line below (BOXES, GALLERY), one tenant row less fits
+        // the panel.
+        let listed = ROLL_ROWS
+            - usize::from(building.boxes_bytes > 0)
+            - usize::from(building.gallery_bytes > 0);
         let rows: Vec<RollRow> = layout
             .named
             .iter()
@@ -127,6 +128,7 @@ impl Roll {
             vacant: rent(building.vacant_bytes),
             office: Shown::in_cents(micros(building.own_bytes, price)),
             boxes: (building.boxes_bytes > 0).then(|| rent(building.boxes_bytes)),
+            gallery: (building.gallery_bytes > 0).then(|| rent(building.gallery_bytes)),
         }
     }
 }
@@ -204,6 +206,8 @@ pub enum Panel<'a> {
     Roll,
     Details(&'a Details),
     Dialog(&'a Eviction),
+    /// What Staff is made of.
+    Staff,
 }
 
 /// The whole window: the building, the selected tenant outlined in white,
@@ -218,10 +222,12 @@ pub fn window(
     let mut d = Vec::new();
     let mut regions = Vec::new();
     building_scene(&mut d, building, layout, highlight);
-    // Every unit and box of a tenant selects it.
+    // Every unit, box and picture of a tenant selects it; Staff's units
+    // open the Staff card.
     for (index, &owner) in layout.cells.iter().enumerate() {
-        let tenant = match owner {
-            Owner::Tenant(t) | Owner::Boxes(Some(t)) => t,
+        let target = match owner {
+            Owner::Tenant(t) | Owner::Boxes(Some(t)) | Owner::Gallery(Some(t)) => Target::Tenant(t),
+            Owner::Staff => Target::Staff,
             _ => continue,
         };
         let (x, y) = cell_xy(index / COLS, index % COLS);
@@ -230,13 +236,16 @@ pub fn window(
             y0: y,
             x1: x + CELL_W - 1,
             y1: y + CELL_H - 1,
-            target: Target::Tenant(tenant),
+            target,
         });
     }
     if let Some(tenant) = selected
         && highlight != Some(tenant)
     {
         outline_owner(&mut d, layout, Owner::Tenant(tenant), TEXT);
+    }
+    if matches!(panel, Panel::Staff) {
+        outline_owner(&mut d, layout, Owner::Staff, TEXT);
     }
     // The two key hints can be clicked.
     let hints_x = 376 - crate::font::text_width(25, 1) + 1;
@@ -258,6 +267,7 @@ pub fn window(
         Panel::Roll => rent_roll_panel(&mut d, &mut regions, building, layout, selected),
         Panel::Details(details) => details_panel(&mut d, &mut regions, building, layout, details),
         Panel::Dialog(eviction) => dialog_panel(&mut d, &mut regions, eviction),
+        Panel::Staff => staff_panel(&mut d, &mut regions, building),
     }
     (d, regions)
 }
@@ -324,6 +334,7 @@ fn building_scene(
         };
         let (wall, window) = match owner {
             Owner::Boxes(_) => (BASEMENT_WALL, CARDBOARD_TAPE),
+            Owner::Gallery(_) => (GALLERY_WALL, FRAME),
             Owner::Vacant => (VACANT_WALL, VACANT_WINDOW),
             Owner::Staff => (STAFF_WALL, STAFF_DETAIL),
             Owner::Others => (OTHERS_WALL, OTHERS_WINDOW),
@@ -352,6 +363,22 @@ fn building_scene(
             d.push(Draw::rect(x + 1, y + 4, x + 9, y + 4, edge));
             d.push(Draw::rect(x + 9, y + 4, x + 9, y + 9, edge));
             d.push(Draw::rect(x + 4, y + 4, x + 5, y + 9, tape));
+        } else if let Owner::Gallery(whose) = owner {
+            // A framed picture: a hill under a sky, in its tenant's hue;
+            // the shared pictures are plain canvas.
+            let (sky, hill) = match whose.and_then(|t| layout.hue_of(t)) {
+                Some(hue) => {
+                    let hue = HUES[usize::from(hue)];
+                    (hue.window, hue.wall)
+                }
+                None => (CANVAS, CANVAS_INK),
+            };
+            d.push(Draw::rect(x + 2, y + 1, x + 8, y + 7, FRAME));
+            d.push(Draw::rect(x + 2, y + 7, x + 8, y + 7, FRAME_DARK));
+            d.push(Draw::rect(x + 3, y + 2, x + 7, y + 6, sky));
+            d.push(Draw::rect(x + 3, y + 6, x + 7, y + 6, hill));
+            d.push(Draw::rect(x + 4, y + 5, x + 6, y + 5, hill));
+            d.push(Draw::dot(x + 5, y + 4, hill));
         } else if !in_strip {
             if owner == Owner::Staff {
                 // A service panel with a pipe.
@@ -454,6 +481,22 @@ fn building_scene(
         let (x, y) = cell_xy(0, 0);
         d.push(Draw::rect(x + 1, y + 1, x + 34, y + 8, BASEMENT_WALL));
         d.push(Draw::shadowed(x + 3, y + 1, "BOXES", TEXT_DIM, OUTLINE));
+    }
+    // GALLERY on the gallery's lowest floor, when it has room there.
+    if let Some(seg) = layout
+        .cells
+        .iter()
+        .position(|o| matches!(o, Owner::Gallery(_)))
+        .map(|first| (first / COLS, first % COLS))
+        && layout.cells[seg.0 * COLS + seg.1..(seg.0 + 1) * COLS]
+            .iter()
+            .take_while(|o| matches!(o, Owner::Gallery(_)))
+            .count()
+            >= 4
+    {
+        let (x, y) = cell_xy(seg.0, seg.1);
+        d.push(Draw::rect(x + 1, y + 1, x + 46, y + 8, GALLERY_WALL));
+        d.push(Draw::shadowed(x + 3, y + 1, "GALLERY", TEXT_DIM, OUTLINE));
     }
     // STAFF on Staff's lowest floor, when it has room there.
     if let Some(seg) = layout.segments(Owner::Staff).first()
@@ -654,7 +697,15 @@ fn rent_roll_panel(
     ));
     y += 12;
     // Vacant is measured, not estimated; Staff is what rent leaves. The
-    // boxes, when there are any, are measured too.
+    // boxes and the gallery, when there are any, are measured too. The
+    // STAFF line opens the Staff card.
+    regions.push(Region {
+        x0: lx0 + 1,
+        y0: y - 2,
+        x1: lx1 - 1,
+        y1: y + 7,
+        target: Target::Staff,
+    });
     let mut lines = vec![(
         STAFF_WALL,
         "STAFF",
@@ -663,6 +714,16 @@ fn rent_roll_panel(
         TEXT_DIM,
         estimate,
     )];
+    if let Some(gallery) = roll.gallery {
+        lines.push((
+            FRAME,
+            "GALLERY",
+            building.gallery_bytes,
+            gallery,
+            TEXT_DIM,
+            false,
+        ));
+    }
     if let Some(boxes) = roll.boxes {
         lines.push((
             CARDBOARD,
@@ -804,7 +865,56 @@ fn panel_frame(d: &mut Vec<Draw>) -> (i32, i32) {
     (lx0, lx1)
 }
 
+/// A bar `x0..=x1` wide of stacked parts, each `(bytes, color)`; parts
+/// with `None` stay empty. The whole bar is `total` bytes.
+fn stacked_bar(
+    d: &mut Vec<Draw>,
+    (x0, x1): (i32, i32),
+    y: i32,
+    total: u64,
+    parts: &[(u64, Option<Rgb>)],
+) {
+    d.push(Draw::rect(x0, y, x1, y + 5, PANEL_LINE));
+    d.push(Draw::rect(x0 + 1, y + 1, x1 - 1, y + 4, PANEL));
+    let total = u128::from(total.max(1));
+    let width = u128::from((x1 - x0 + 1) as u32);
+    let mut sum = 0u128;
+    for &(bytes, color) in parts {
+        let from = x0 + (width * sum / total) as i32;
+        sum += u128::from(bytes);
+        let to = x0 + (width * sum.min(total) / total) as i32 - 1;
+        if let Some(color) = color
+            && to >= from
+        {
+            d.push(Draw::rect(from, y, to, y + 5, color));
+        }
+    }
+}
+
+/// A row of a card: a swatch (filled, or an outline for `None`), a label
+/// and a value on the right.
+fn swatch_row(
+    d: &mut Vec<Draw>,
+    (lx0, lx1): (i32, i32),
+    y: i32,
+    swatch: Option<Rgb>,
+    label: &str,
+    value: String,
+) {
+    match swatch {
+        Some(color) => d.push(Draw::rect(lx0 + 5, y, lx0 + 9, y + 6, color)),
+        None => {
+            d.push(Draw::rect(lx0 + 5, y, lx0 + 9, y + 6, PANEL_LINE));
+            d.push(Draw::rect(lx0 + 6, y + 1, lx0 + 8, y + 5, PANEL));
+        }
+    }
+    d.push(Draw::text(lx0 + 13, y, label, TEXT_DIM));
+    d.push(Draw::text_right(lx1 - 5, y, value, TEXT, 1));
+}
+
 /// The details card (SPEC.md, The details card), in the rent roll's panel.
+/// The lease is broken down: what is in RAM, its pictures in the gallery,
+/// its share of the boxes, and the rest, leased on paper only.
 fn details_panel(
     d: &mut Vec<Draw>,
     regions: &mut Vec<Region>,
@@ -820,8 +930,9 @@ fn details_panel(
         Shown::rent(micros(bytes, building.price.per_gb_micros)).fit(symbol, estimate, None)
     };
     let hue = layout.hue_of(details.tenant).map(|h| HUES[usize::from(h)]);
+    let gb = |bytes: u64| format!("{} GB", gb_text(bytes));
 
-    // Top: name, flags in words, rent now.
+    // Top: name and rent now, then its flags in words.
     if let Some(hue) = hue {
         d.push(Draw::rect(lx0 + 5, 15, lx0 + 9, 21, hue.wall));
     }
@@ -831,6 +942,13 @@ fn details_panel(
         cut(&tenant.name.to_uppercase(), crate::ui::NAME_CHARS),
         GOLD,
     ));
+    d.push(Draw::text_right(
+        lx1 - 5,
+        15,
+        money(tenant.rent_bytes),
+        TEXT,
+        1,
+    ));
     let flagged = tenant.flags.iter().any(|f| *f != Flag::Family);
     d.push(Draw::text(
         lx0 + 5,
@@ -838,28 +956,68 @@ fn details_panel(
         flags_in_words(tenant, details.family),
         if flagged { ALERT } else { TEXT_DIM },
     ));
-    d.push(Draw::text(
-        lx0 + 5,
-        37,
-        format!("{} GB", gb_text(tenant.rent_bytes)),
-        TEXT,
-    ));
+    d.push(Draw::rect(lx0 + 4, 36, lx1 - 4, 36, PANEL_LINE));
+
+    // The lease, what it reserved, against what it holds.
+    let boxes = box_share(building, details.tenant);
+    let held = tenant
+        .rent_bytes
+        .saturating_add(tenant.gpu_bytes)
+        .saturating_add(boxes);
+    let on_paper = tenant.lease_bytes.saturating_sub(held);
+    d.push(Draw::text(lx0 + 5, 40, "LEASE", TEXT_DIM));
     d.push(Draw::text_right(
         lx1 - 5,
-        37,
-        money(tenant.rent_bytes),
+        40,
+        gb(tenant.lease_bytes),
         TEXT,
         1,
     ));
-    d.push(Draw::rect(lx0 + 4, 47, lx1 - 4, 47, PANEL_LINE));
+    let in_ram = hue.map_or(OTHERS_WALL, |h| h.wall);
+    stacked_bar(
+        d,
+        (lx0 + 5, lx1 - 5),
+        50,
+        tenant.lease_bytes.max(held),
+        &[
+            (tenant.rent_bytes, Some(in_ram)),
+            (tenant.gpu_bytes, Some(FRAME)),
+            (boxes, Some(CARDBOARD)),
+            (on_paper, None),
+        ],
+    );
+    let est = if estimate { "~" } else { "" };
+    // A building without a gallery or boxes does not know: a dash.
+    let part = |known: bool, text: String| if known { text } else { "-".into() };
+    let rows = [
+        (
+            Some(in_ram),
+            "IN RAM",
+            format!("{est}{}", gb(tenant.rent_bytes)),
+        ),
+        (
+            Some(FRAME),
+            "GALLERY",
+            part(building.gallery_bytes > 0, gb(tenant.gpu_bytes)),
+        ),
+        (
+            Some(CARDBOARD),
+            "BOXES",
+            part(building.boxes_bytes > 0, format!("~{}", gb(boxes))),
+        ),
+        (None, "ON PAPER", gb(on_paper)),
+    ];
+    let mut y = 59;
+    for (swatch, label, value) in rows {
+        swatch_row(d, (lx0, lx1), y, swatch, label, value);
+        y += 9;
+    }
+    d.push(Draw::rect(lx0 + 4, 96, lx1 - 4, 96, PANEL_LINE));
 
     // Numbers.
-    let gb = |bytes: u64| format!("{} GB", gb_text(bytes));
     let rows = [
-        ("LEASE", gb(tenant.lease_bytes)),
         ("PEAK", gb(details.peak_bytes.max(tenant.rent_bytes))),
         ("AN HOUR AGO", details.hour_ago_bytes.map_or("-".into(), gb)),
-        ("PACKED", gb(tenant.packed_bytes)),
         ("PROCESSES", tenant.process_count.to_string()),
         ("MOVED IN", details.moved_in_ms.map_or("-".into(), ago_text)),
         (
@@ -867,16 +1025,16 @@ fn details_panel(
             details.last_visit_ms.map_or("NEVER".into(), ago_text),
         ),
     ];
-    let mut y = 51;
+    let mut y = 100;
     for (label, value) in rows {
         d.push(Draw::text(lx0 + 5, y, label, TEXT_DIM));
         d.push(Draw::text_right(lx1 - 5, y, value, TEXT, 1));
-        y += 10;
+        y += 9;
     }
-    d.push(Draw::rect(lx0 + 4, 121, lx1 - 4, 121, PANEL_LINE));
+    d.push(Draw::rect(lx0 + 4, 146, lx1 - 4, 146, PANEL_LINE));
 
     // History: the last watched hour in five-minute bars, newest right.
-    d.push(Draw::text(lx0 + 5, 125, "LAST HOUR", TEXT_DIM));
+    d.push(Draw::text(lx0 + 5, 149, "LAST HOUR", TEXT_DIM));
     let top = details
         .history
         .iter()
@@ -885,14 +1043,13 @@ fn details_panel(
         .max()
         .unwrap_or(0)
         .max(1);
-    let bar_color = hue.map_or(OTHERS_WALL, |h| h.wall);
-    let base = 163;
+    let base = 177;
     let slots = 12usize;
     let first = slots.saturating_sub(details.history.len());
     for (k, &value) in details.history.iter().rev().take(slots).rev().enumerate() {
         let x = lx0 + 5 + (first + k) as i32 * 12;
-        let height = (u128::from(value) * 26 / u128::from(top)) as i32;
-        d.push(Draw::rect(x, base - height, x + 9, base, bar_color));
+        let height = (u128::from(value) * 18 / u128::from(top)) as i32;
+        d.push(Draw::rect(x, base - height, x + 9, base, in_ram));
     }
     d.push(Draw::rect(lx0 + 4, base + 1, lx1 - 4, base + 1, PANEL_LINE));
 
@@ -903,7 +1060,7 @@ fn details_panel(
         d,
         regions,
         left,
-        170,
+        183,
         "EVICT",
         if family { TEXT_DIM } else { ALERT },
         (!family).then_some(Target::Evict),
@@ -913,19 +1070,95 @@ fn details_panel(
     } else {
         "FAMILY OFF"
     };
-    button(d, regions, right, 170, label, TEXT, Some(Target::Family));
+    button(d, regions, right, 183, label, TEXT, Some(Target::Family));
     if tenant.has(Flag::Squatter) {
         button(
             d,
             regions,
             left,
-            186,
+            198,
             "STARTUP",
             GOLD,
             Some(Target::Startup),
         );
     }
-    button(d, regions, right, 186, "BACK", TEXT, Some(Target::Back));
+    button(d, regions, right, 198, "BACK", TEXT, Some(Target::Back));
+}
+
+/// The Staff card: what Staff is made of, in the rent roll's panel. The
+/// parts come from Windows' own counters; SHARED, OTHER is what they
+/// leave, which Windows does not break down without administrator rights.
+fn staff_panel(d: &mut Vec<Draw>, regions: &mut Vec<Region>, building: &Building) {
+    let (lx0, lx1) = panel_frame(d);
+    let symbol = building.price.symbol.as_str();
+    let staff = building.staff_bytes;
+    let gb = |bytes: u64| format!("{} GB", gb_text(bytes));
+    d.push(Draw::rect(lx0 + 5, 15, lx0 + 9, 21, STAFF_WALL));
+    d.push(Draw::text(lx0 + 13, 15, "STAFF", GOLD));
+    d.push(Draw::text_right(
+        lx1 - 5,
+        15,
+        Shown::rent(micros(staff, building.price.per_gb_micros)).fit(
+            symbol,
+            building.rent_is_estimate,
+            None,
+        ),
+        TEXT,
+        1,
+    ));
+    d.push(Draw::text(
+        lx0 + 5,
+        26,
+        "WINDOWS KEEPS IT RUNNING",
+        TEXT_DIM,
+    ));
+    d.push(Draw::rect(lx0 + 4, 36, lx1 - 4, 36, PANEL_LINE));
+    d.push(Draw::text(lx0 + 5, 40, "TOTAL", TEXT_DIM));
+    d.push(Draw::text_right(lx1 - 5, 40, gb(staff), TEXT, 1));
+
+    let parts = &building.staff_parts;
+    if parts.sum() == 0 {
+        // A building file that does not say.
+        d.push(Draw::text(lx0 + 5, 59, "NOT BROKEN DOWN HERE", TEXT_DIM));
+    } else {
+        let rows = parts.rows();
+        stacked_bar(
+            d,
+            (lx0 + 5, lx1 - 5),
+            50,
+            parts.sum(),
+            &rows
+                .iter()
+                .zip(STAFF_PARTS)
+                .map(|(&(_, bytes), color)| (bytes, Some(color)))
+                .collect::<Vec<_>>(),
+        );
+        let mut y = 59;
+        for (&(label, bytes), color) in rows.iter().zip(STAFF_PARTS) {
+            swatch_row(d, (lx0, lx1), y, Some(color), label, gb(bytes));
+            y += 10;
+        }
+        d.push(Draw::rect(lx0 + 4, 130, lx1 - 4, 130, PANEL_LINE));
+        let mut y = 134;
+        for line in [
+            "SHARED, OTHER: PROGRAM",
+            "CODE AND FILES APPS",
+            "SHARE, PAGE TABLES AND",
+            "MEMORY DRIVERS LOCK.",
+        ] {
+            d.push(Draw::text(lx0 + 5, y, line, TEXT_DIM));
+            y += 9;
+        }
+    }
+    button(
+        d,
+        regions,
+        (lx0 + 79, lx1 - 5),
+        198,
+        "BACK",
+        TEXT,
+        Some(Target::Back),
+    );
 }
 
 /// The eviction dialog, in the rent roll's panel.

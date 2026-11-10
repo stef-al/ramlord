@@ -34,6 +34,21 @@ pub const CARDBOARD: Rgb = 0xa47148;
 pub const CARDBOARD_DARK: Rgb = 0x6e4a2c;
 pub const CARDBOARD_TAPE: Rgb = 0xe3c48f;
 
+// The gallery, where graphics memory hangs as framed pictures (not in
+// SPEC.md's palette either: the owner asked for it after M4).
+pub const GALLERY_WALL: Rgb = 0x3a2e45;
+pub const FRAME: Rgb = 0xc9a14a;
+pub const FRAME_DARK: Rgb = 0x7d5f28;
+/// A picture nobody in particular hung: Windows' own and the small fry's.
+pub const CANVAS: Rgb = 0xd9d3c3;
+pub const CANVAS_INK: Rgb = 0x7c7f99;
+
+/// The Staff card's parts, in `StaffParts::rows` order: services, kernel
+/// pools, drivers, file cache, to disk, hardware, shared and other.
+pub const STAFF_PARTS: [Rgb; 7] = [
+    0x8a8fa8, 0x6b7cb8, 0x5d6390, 0x7fa7b8, 0xb59a6a, 0x4a4e69, 0x3a3d55,
+];
+
 // The rent roll card.
 pub const PAPER: Rgb = 0xf4f1de;
 pub const INK: Rgb = 0x1b1f3b;

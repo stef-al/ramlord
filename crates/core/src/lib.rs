@@ -33,7 +33,7 @@ pub mod snapshot;
 pub mod tenants;
 pub mod ui;
 
-pub use building::{Building, BuildingError, Flag, Price, Tenant};
+pub use building::{Building, BuildingError, Flag, Price, StaffParts, Tenant};
 pub use layout::{HueBook, Layout};
 pub use render::Frame;
 pub use rules::Rules;

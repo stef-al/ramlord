@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::building::{Building, Price, Tenant};
+use crate::building::{Building, Price, StaffParts, Tenant};
 use crate::date::Date;
 use crate::rules::{Helper, Rules};
 use crate::snapshot::{Process, Snapshot};
@@ -54,6 +54,8 @@ pub struct TenantSample {
     /// the members of max(commit - private working set, 0). An estimate:
     /// Windows does not tell which pages of a process are compressed.
     pub packed_bytes: u64,
+    /// Graphics memory its members hold in RAM.
+    pub gpu_bytes: u64,
     /// When its oldest member started (0 when unknown).
     pub started_at_ms: u64,
     /// Any member owns a visible window.
@@ -71,6 +73,12 @@ pub struct Grouping {
     pub own_bytes: u64,
     /// The Memory Compression process's working set: the boxes.
     pub boxes_bytes: u64,
+    /// Graphics memory in RAM: the adapters' total, or the processes' sum
+    /// if that is more. The gallery.
+    pub gallery_bytes: u64,
+    /// Staff processes' private working sets (the boxes' process apart):
+    /// the Staff card's SERVICES.
+    pub services_bytes: u64,
 }
 
 impl Grouping {
@@ -271,6 +279,7 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
             process_count: 0,
             pids: Vec::new(),
             packed_bytes: 0,
+            gpu_bytes: 0,
             started_at_ms: 0,
             has_window: false,
         });
@@ -284,6 +293,7 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
         tenant.process_count += 1;
         tenant.pids.push(pid);
         tenant.packed_bytes += p.lease_bytes.saturating_sub(rent);
+        tenant.gpu_bytes += p.gpu_shared_bytes;
         tenant.has_window |= p.has_visible_window;
         if p.started_at_ms > 0
             && (tenant.started_at_ms == 0 || p.started_at_ms < tenant.started_at_ms)
@@ -297,17 +307,29 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
         .filter(|p| p.is_self)
         .map(|p| p.rent_bytes)
         .sum();
+    let compression = |p: &Process| p.exe().is_some_and(|n| rules.is_compression(&n));
     let boxes_bytes = snapshot
         .processes
         .iter()
-        .filter(|p| p.exe().is_some_and(|n| rules.is_compression(&n)))
+        .filter(|p| compression(p))
         .map(|p| p.rent_bytes.max(p.working_set_bytes))
         .sum();
+    let services_bytes = snapshot
+        .processes
+        .iter()
+        .filter(|p| grouper.roles[&p.pid] == Role::Staff && !compression(p))
+        .map(|p| p.rent_bytes)
+        .sum();
+    let gallery_bytes = snapshot
+        .gpu_shared_bytes
+        .max(snapshot.processes.iter().map(|p| p.gpu_shared_bytes).sum());
     Grouping {
         tenants: tenants.into_values().collect(),
         roles: grouper.roles,
         own_bytes,
         boxes_bytes,
+        gallery_bytes,
+        services_bytes,
     }
 }
 
@@ -352,11 +374,26 @@ pub fn building(snapshot: &Snapshot, rules: &Rules, lease: &Lease) -> Building {
 pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Building {
     let rent = grouping.rent_bytes();
     let boxes = grouping.boxes_bytes;
+    let gallery = grouping.gallery_bytes;
     let (staff, vacant) = balance(
         snapshot.capacity_bytes,
         snapshot.available_bytes,
-        rent.saturating_add(boxes),
+        rent.saturating_add(boxes).saturating_add(gallery),
     );
+    // Installed memory Windows never gets; unknown without its total.
+    let hardware = match snapshot.physical_total_bytes {
+        0 => 0,
+        total => snapshot.capacity_bytes.saturating_sub(total),
+    };
+    let measured = StaffParts {
+        services_bytes: grouping.services_bytes,
+        hardware_bytes: hardware,
+        kernel_pool_bytes: snapshot.kernel_nonpaged_bytes + snapshot.kernel_paged_resident_bytes,
+        drivers_bytes: snapshot.driver_bytes + snapshot.kernel_code_bytes,
+        file_cache_bytes: snapshot.file_cache_bytes,
+        modified_bytes: snapshot.modified_bytes,
+        other_bytes: 0,
+    };
     Building {
         kind: "building".into(),
         date: Date::from_unix_ms(snapshot.at_ms).iso(),
@@ -369,6 +406,8 @@ pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Bu
         remark: lease.remark.clone(),
         rent_is_estimate: snapshot.rent_is_estimate,
         boxes_bytes: boxes,
+        gallery_bytes: gallery,
+        staff_parts: StaffParts::cut(staff, &measured),
         tenants: grouping
             .tenants
             .into_iter()
@@ -379,6 +418,7 @@ pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Bu
                 lease_bytes: t.lease_bytes,
                 process_count: t.process_count,
                 packed_bytes: t.packed_bytes,
+                gpu_bytes: t.gpu_bytes,
                 flags: Vec::new(),
             })
             .collect(),

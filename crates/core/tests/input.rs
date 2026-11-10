@@ -8,7 +8,7 @@ use std::io::Cursor;
 use std::path::Path;
 
 use ramlord_core::flags::State;
-use ramlord_core::layout::Layout;
+use ramlord_core::layout::{Layout, Owner};
 use ramlord_core::live::Live;
 use ramlord_core::scene::{self, Details, Panel, TOWER_PNG_SCALE};
 use ramlord_core::tenants::Lease;
@@ -60,13 +60,15 @@ fn clicks_on_units_rows_and_hints() {
     // Chrome starts at floor 2, column 12; Discord's label is on floor 6.
     assert_eq!(at(unit(2, 12)), Some(Target::Tenant(0)));
     assert_eq!(at(unit(6, 0)), Some(Target::Tenant(1)));
-    // Staff and Vacant units select nothing.
-    assert_eq!(at(unit(0, 0)), None);
+    // Staff's units open the Staff card; Vacant's select nothing.
+    assert_eq!(at(unit(0, 0)), Some(Target::Staff));
     assert_eq!(at(unit(15, 0)), None);
     // Rent roll rows: Chrome, Discord, VS Code...
     assert_eq!(at((300, 54)), Some(Target::Tenant(0)));
     assert_eq!(at((300, 64)), Some(Target::Tenant(1)));
     assert_eq!(at((300, 144)), Some(Target::Tenant(9))); // OneDrive, the tenth
+    // The STAFF line, below RENT OWED, opens the Staff card too.
+    assert_eq!(at((300, 182)), Some(Target::Staff));
     // The two hints.
     assert_eq!(at((240, 222)), Some(Target::RentRollCard));
     assert_eq!(at((350, 222)), Some(Target::Settings));
@@ -89,7 +91,7 @@ fn the_details_card_offers_the_right_actions() {
             .filter(|t| {
                 !matches!(
                     t,
-                    Target::Tenant(_) | Target::RentRollCard | Target::Settings
+                    Target::Tenant(_) | Target::Staff | Target::RentRollCard | Target::Settings
                 )
             })
             .collect();
@@ -119,7 +121,7 @@ fn dialogs_offer_their_buttons() {
             .filter(|t| {
                 !matches!(
                     t,
-                    Target::Tenant(_) | Target::RentRollCard | Target::Settings
+                    Target::Tenant(_) | Target::Staff | Target::RentRollCard | Target::Settings
                 )
             })
             .collect()
@@ -325,6 +327,119 @@ fn family_is_saved_and_cannot_be_evicted() {
         .find(|t| t.id == id)
         .unwrap();
     assert_eq!(tenant.flags, [ramlord_core::Flag::Family]);
+}
+
+fn gallery() -> Snapshot {
+    let text = std::fs::read_to_string(repo().join("fixtures/snapshot-gallery.json")).unwrap();
+    Snapshot::from_json(&text).unwrap()
+}
+
+/// Chrome on a PC with graphics memory: its card shows the lease broken
+/// down, and its pictures in the gallery are its own.
+#[test]
+fn the_lease_is_broken_down_on_the_card() {
+    let mut live = live();
+    let snapshot = gallery();
+    live.update(&snapshot).unwrap();
+    let now = snapshot.at_ms;
+    live.input(Input::Key(Key::Down), now);
+    live.input(Input::Key(Key::Enter), now);
+    save(live.frame().unwrap(), "details-gallery-chrome.png");
+    let b = live.building().unwrap().clone();
+    let index = b.tenants.iter().position(|t| t.name == "Chrome").unwrap();
+    let chrome = &b.tenants[index];
+    assert_eq!(chrome.gpu_bytes, 900 << 20);
+    assert_eq!(b.gallery_bytes, 2050 << 20);
+    // Its lease holds what is in RAM and its pictures; the rest is on
+    // paper (in the page file, or never touched).
+    assert!(chrome.lease_bytes > chrome.rent_bytes + chrome.gpu_bytes);
+    // A click on one of its pictures selects it too.
+    let (layout, _) = Layout::new(&b, &HueBook::new());
+    let picture = layout
+        .cells
+        .iter()
+        .position(|&o| o == Owner::Gallery(Some(index)))
+        .expect("Chrome has pictures of its own");
+    let (x, y) = unit((picture / 16) as i32, (picture % 16) as i32);
+    live.input(Input::Key(Key::Escape), now);
+    live.input(Input::Key(Key::Escape), now);
+    live.input(Input::Click { x, y }, now);
+    assert_eq!(live.ui().view, View::Details);
+    assert_eq!(live.ui().selected.as_deref(), Some(chrome.id.as_str()));
+}
+
+/// The Staff card opens from Staff's units or its line, lists its parts,
+/// and Esc or Back closes it.
+#[test]
+fn staff_opens_its_card_with_its_parts() {
+    const MIB: u64 = 1 << 20;
+    let mut live = live();
+    let snapshot = gallery();
+    live.update(&snapshot).unwrap();
+    let now = snapshot.at_ms;
+    let staff_line = live
+        .regions()
+        .iter()
+        .find(|r| r.target == Target::Staff && r.x0 > 224)
+        .copied()
+        .expect("the STAFF line can be clicked");
+    let click_line = Input::Click {
+        x: staff_line.x0 + 2,
+        y: staff_line.y0 + 2,
+    };
+    live.input(click_line, now);
+    assert_eq!(live.ui().view, View::Staff);
+    save(live.frame().unwrap(), "staff-card.png");
+    let b = live.building().unwrap();
+    let parts = &b.staff_parts;
+    assert_eq!(parts.sum(), b.staff_bytes, "the parts make up Staff");
+    assert_eq!(parts.hardware_bytes, 368 * MIB);
+    assert_eq!(parts.kernel_pool_bytes, (380 + 420) * MIB);
+    assert_eq!(parts.drivers_bytes, (58 + 17) * MIB);
+    assert_eq!(parts.file_cache_bytes, 310 * MIB);
+    assert_eq!(parts.modified_bytes, 140 * MIB);
+    assert!(parts.services_bytes > 0);
+    // The next sample keeps the card open, though no tenant is selected.
+    let mut later = snapshot.clone();
+    later.at_ms += 2_000;
+    live.update(&later).unwrap();
+    assert_eq!(live.ui().view, View::Staff);
+    // Esc closes it; a click on a Staff unit opens it again; Back closes it.
+    live.input(Input::Key(Key::Escape), now);
+    assert_eq!(live.ui().view, View::Roll);
+    let staff_unit = live
+        .regions()
+        .iter()
+        .find(|r| r.target == Target::Staff && r.x0 < 224)
+        .copied()
+        .expect("Staff's units can be clicked");
+    live.input(
+        Input::Click {
+            x: staff_unit.x0 + 2,
+            y: staff_unit.y0 + 2,
+        },
+        now,
+    );
+    assert_eq!(live.ui().view, View::Staff);
+    let back = live
+        .regions()
+        .iter()
+        .find(|r| r.target == Target::Back)
+        .copied()
+        .unwrap();
+    live.input(
+        Input::Click {
+            x: back.x0 + 2,
+            y: back.y0 + 2,
+        },
+        now,
+    );
+    assert_eq!(live.ui().view, View::Roll);
+    // Down from the Staff card selects the first tenant in the rent roll.
+    live.input(click_line, now);
+    live.input(Input::Key(Key::Down), now);
+    assert_eq!(live.ui().view, View::Roll);
+    assert!(live.ui().selected.is_some());
 }
 
 /// The details card of Discord in the sample building, pixel for pixel.

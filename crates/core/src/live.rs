@@ -127,6 +127,7 @@ impl Live {
         };
         let panel = match (&self.ui.eviction, &details) {
             (Eviction::Idle, Some(details)) => Panel::Details(details),
+            (Eviction::Idle, None) if self.ui.view == View::Staff => Panel::Staff,
             (Eviction::Idle, None) => Panel::Roll,
             (eviction, _) => Panel::Dialog(eviction),
         };

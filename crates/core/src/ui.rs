@@ -46,6 +46,8 @@ pub enum Target {
     RentRollCard,
     /// The `F3 SETTINGS` hint.
     Settings,
+    /// Staff's units or its rent roll row: the Staff card.
+    Staff,
     Evict,
     Family,
     Startup,
@@ -216,6 +218,8 @@ impl Eviction {
 pub enum View {
     Roll,
     Details,
+    /// The Staff card: what Staff is made of.
+    Staff,
 }
 
 /// What the state machine needs to know about the moment.
@@ -277,7 +281,9 @@ impl Ui {
         };
         if self.selected_index(building).is_none() {
             self.selected = None;
-            self.view = View::Roll;
+            if self.view == View::Details {
+                self.view = View::Roll;
+            }
         }
         report
     }
@@ -396,6 +402,11 @@ impl Ui {
                     self.select(cx.building, t, View::Details);
                     Vec::new()
                 }
+                Some(Target::Staff) => {
+                    self.selected = None;
+                    self.view = View::Staff;
+                    Vec::new()
+                }
                 Some(Target::RentRollCard) => vec![Command::RentRollCard],
                 Some(Target::Settings) => vec![Command::Settings],
                 Some(Target::Back) => {
@@ -425,7 +436,11 @@ impl Ui {
                         (true, Some(k)) => (k + 1).min(last),
                         (false, Some(k)) => k.saturating_sub(1),
                     };
-                    let view = self.view;
+                    // From the Staff card, a row takes the rent roll back.
+                    let view = match self.view {
+                        View::Staff => View::Roll,
+                        view => view,
+                    };
                     self.select(cx.building, cx.rows[next], view);
                     Vec::new()
                 }
@@ -442,10 +457,10 @@ impl Ui {
                     Vec::new()
                 }
                 Key::Escape => {
-                    if self.view == View::Details {
-                        self.view = View::Roll;
-                    } else {
+                    if self.view == View::Roll {
                         self.selected = None;
+                    } else {
+                        self.view = View::Roll;
                     }
                     Vec::new()
                 }

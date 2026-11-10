@@ -1,7 +1,8 @@
 //! The Building: tenants with flags, Staff and Vacant at one moment.
 //!
 //! This is the input of `layout` and the `--building` file format. All
-//! sizes are bytes; Staff, the tenants' rent and Vacant sum to capacity.
+//! sizes are bytes; Staff, the tenants' rent, the gallery, the boxes and
+//! Vacant sum to capacity.
 
 use serde::Deserialize;
 
@@ -23,6 +24,10 @@ pub struct Tenant {
     /// Committed memory not in RAM now (see `tenants::TenantSample`).
     #[serde(default)]
     pub packed_bytes: u64,
+    /// Graphics memory its processes hold in RAM: its pictures in the
+    /// gallery. Not part of its rent; part of its lease.
+    #[serde(default)]
+    pub gpu_bytes: u64,
     #[serde(default)]
     pub flags: Vec<Flag>,
 }
@@ -30,6 +35,74 @@ pub struct Tenant {
 impl Tenant {
     pub fn has(&self, flag: Flag) -> bool {
         self.flags.contains(&flag)
+    }
+}
+
+/// What Staff is made of: the rows of the Staff card. The parts sum to
+/// Staff. Each measured part is cut to what the parts before it leave,
+/// and `other_bytes` is the rest, which Windows does not break down
+/// without administrator rights.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct StaffParts {
+    /// Windows' own processes and services: their private working sets,
+    /// RAMlord's included.
+    pub services_bytes: u64,
+    /// Reserved by the hardware (firmware, built-in graphics): installed
+    /// but never Windows' to use.
+    pub hardware_bytes: u64,
+    /// The kernel's pools in RAM: nonpaged, and the paged pool's resident
+    /// part.
+    pub kernel_pool_bytes: u64,
+    /// Drivers' and the kernel's pageable code and data in RAM.
+    pub drivers_bytes: u64,
+    /// The file cache in RAM.
+    pub file_cache_bytes: u64,
+    /// Changed pages waiting to be written to disk.
+    pub modified_bytes: u64,
+    /// The rest: pages shared between processes (program code, mapped
+    /// files), page tables, kernel stacks, memory drivers keep locked.
+    pub other_bytes: u64,
+}
+
+impl StaffParts {
+    /// Cuts the measured parts of `measured` to `staff`, in field order;
+    /// `other_bytes` becomes the rest.
+    pub fn cut(staff: u64, measured: &StaffParts) -> StaffParts {
+        let mut left = staff;
+        let mut take = |bytes: u64| {
+            let taken = bytes.min(left);
+            left -= taken;
+            taken
+        };
+        let mut parts = StaffParts {
+            services_bytes: take(measured.services_bytes),
+            hardware_bytes: take(measured.hardware_bytes),
+            kernel_pool_bytes: take(measured.kernel_pool_bytes),
+            drivers_bytes: take(measured.drivers_bytes),
+            file_cache_bytes: take(measured.file_cache_bytes),
+            modified_bytes: take(measured.modified_bytes),
+            other_bytes: 0,
+        };
+        parts.other_bytes = left;
+        parts
+    }
+
+    /// The Staff card's rows: label and bytes, in order.
+    pub fn rows(&self) -> [(&'static str, u64); 7] {
+        [
+            ("SERVICES", self.services_bytes),
+            ("KERNEL POOLS", self.kernel_pool_bytes),
+            ("DRIVERS", self.drivers_bytes),
+            ("FILE CACHE", self.file_cache_bytes),
+            ("TO DISK", self.modified_bytes),
+            ("HARDWARE", self.hardware_bytes),
+            ("SHARED, OTHER", self.other_bytes),
+        ]
+    }
+
+    pub fn sum(&self) -> u64 {
+        self.rows().iter().map(|r| r.1).sum()
     }
 }
 
@@ -111,6 +184,15 @@ pub struct Building {
     /// basement. Apart from Staff; part of the sum to capacity.
     #[serde(default)]
     pub boxes_bytes: u64,
+    /// Graphics memory in RAM, everyone's: the gallery, where tenants hang
+    /// the pictures they draw. Apart from Staff; part of the sum to
+    /// capacity.
+    #[serde(default)]
+    pub gallery_bytes: u64,
+    /// What Staff is made of. All zero in a building file that does not
+    /// say; the Staff card then shows Staff as one row.
+    #[serde(default)]
+    pub staff_parts: StaffParts,
     pub tenants: Vec<Tenant>,
 }
 
@@ -146,7 +228,7 @@ impl std::fmt::Display for BuildingError {
             BuildingError::ZeroPrice => write!(f, "price.per_gb_micros is 0"),
             BuildingError::Unbalanced { capacity, sum } => write!(
                 f,
-                "staff + tenants' rent + vacant is {sum} bytes, capacity is {capacity} \
+                "staff + tenants' rent + gallery + boxes + vacant is {sum} bytes, capacity is {capacity} \
                  (only an overfull building, with no staff and no vacancy, may exceed it)"
             ),
             BuildingError::EmptyId => write!(f, "a tenant has an empty id"),
@@ -188,6 +270,7 @@ impl Building {
         let sum = u128::from(self.staff_bytes)
             + u128::from(self.vacant_bytes)
             + u128::from(self.boxes_bytes)
+            + u128::from(self.gallery_bytes)
             + self
                 .tenants
                 .iter()
@@ -226,6 +309,7 @@ impl Building {
             .staff_bytes
             .saturating_add(self.vacant_bytes)
             .saturating_add(self.boxes_bytes)
+            .saturating_add(self.gallery_bytes)
             .saturating_add(self.rent_bytes());
         self.capacity_bytes.max(sum)
     }
@@ -269,6 +353,8 @@ pub(crate) fn test_building(staff: u64, tenants: &[(&str, u64)], vacant: u64) ->
         remark: String::new(),
         rent_is_estimate: false,
         boxes_bytes: 0,
+        gallery_bytes: 0,
+        staff_parts: StaffParts::default(),
         tenants: tenants
             .iter()
             .map(|&(name, rent_bytes)| Tenant {
@@ -278,6 +364,7 @@ pub(crate) fn test_building(staff: u64, tenants: &[(&str, u64)], vacant: u64) ->
                 lease_bytes: rent_bytes,
                 process_count: 1,
                 packed_bytes: 0,
+                gpu_bytes: 0,
                 flags: vec![],
             })
             .collect(),
@@ -307,6 +394,36 @@ mod tests {
         let mut v: serde_json::Value = serde_json::from_str(SAMPLE).unwrap();
         f(&mut v);
         v.to_string()
+    }
+
+    #[test]
+    fn staff_parts_are_cut_to_staff_and_the_rest_is_other() {
+        let measured = StaffParts {
+            services_bytes: 500,
+            hardware_bytes: 100,
+            kernel_pool_bytes: 300,
+            drivers_bytes: 50,
+            file_cache_bytes: 200,
+            modified_bytes: 80,
+            other_bytes: 999, // ignored: always the rest
+        };
+        let roomy = StaffParts::cut(2_000, &measured);
+        assert_eq!(roomy.other_bytes, 2_000 - 1_230);
+        assert_eq!(roomy.sum(), 2_000);
+        // Measured parts that add up to more than Staff are cut in order:
+        // services first, the modified list last.
+        let tight = StaffParts::cut(1_000, &measured);
+        assert_eq!(
+            (
+                tight.kernel_pool_bytes,
+                tight.drivers_bytes,
+                tight.file_cache_bytes
+            ),
+            (300, 50, 50)
+        );
+        assert_eq!((tight.modified_bytes, tight.other_bytes), (0, 0));
+        assert_eq!(tight.sum(), 1_000);
+        assert_eq!(StaffParts::cut(0, &measured).sum(), 0);
     }
 
     #[test]

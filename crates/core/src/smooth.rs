@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::building::Building;
+use crate::building::{Building, StaffParts};
 use crate::layout::split_named;
 use crate::tenants::balance;
 
@@ -20,6 +20,7 @@ struct Sample {
     at_ms: u64,
     vacant: u64,
     boxes: u64,
+    gallery: u64,
     rents: BTreeMap<String, u64>,
 }
 
@@ -53,6 +54,7 @@ impl Smoother {
             at_ms,
             vacant: current.vacant_bytes,
             boxes: current.boxes_bytes,
+            gallery: current.gallery_bytes,
             rents: current
                 .tenants
                 .iter()
@@ -82,14 +84,20 @@ impl Smoother {
         }
         let vacant = average(&|s| s.vacant);
         let boxes = average(&|s| s.boxes);
+        let gallery = average(&|s| s.gallery);
         let (staff, vacant) = balance(
             smoothed.capacity_bytes,
             vacant,
-            smoothed.rent_bytes().saturating_add(boxes),
+            smoothed
+                .rent_bytes()
+                .saturating_add(boxes)
+                .saturating_add(gallery),
         );
         smoothed.staff_bytes = staff;
         smoothed.vacant_bytes = vacant;
         smoothed.boxes_bytes = boxes;
+        smoothed.gallery_bytes = gallery;
+        smoothed.staff_parts = StaffParts::cut(staff, &current.staff_parts);
         smoothed
     }
 
