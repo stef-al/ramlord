@@ -54,7 +54,8 @@ pub struct TenantSample {
     /// the members of max(commit - private working set, 0). An estimate:
     /// Windows does not tell which pages of a process are compressed.
     pub packed_bytes: u64,
-    /// Graphics memory its members hold in RAM.
+    /// Graphics memory its members hold in RAM, estimated (`gpu_owned`),
+    /// before it is fitted to the gallery.
     pub gpu_bytes: u64,
     /// When its oldest member started (0 when unknown).
     pub started_at_ms: u64,
@@ -73,12 +74,16 @@ pub struct Grouping {
     pub own_bytes: u64,
     /// The Memory Compression process's working set: the boxes.
     pub boxes_bytes: u64,
-    /// Graphics memory in RAM: the adapters' total, or the processes' sum
-    /// if that is more. The gallery.
+    /// Graphics memory in RAM: the adapters' total when Windows reports
+    /// it, else the processes' estimates summed. The gallery.
     pub gallery_bytes: u64,
+    /// Every process's `gpu_owned`, summed.
+    pub gpu_owned_bytes: u64,
     /// Staff processes' private working sets (the boxes' process apart):
     /// the Staff card's SERVICES.
     pub services_bytes: u64,
+    /// Staff processes' packed memory, for their share of the boxes.
+    pub staff_packed_bytes: u64,
 }
 
 impl Grouping {
@@ -113,12 +118,12 @@ impl<'a> Grouper<'a> {
         if self.is_vm_host(p) {
             return false;
         }
+        // A process that cannot be opened has no image path, though the
+        // process list still names it: it is Staff all the same.
         p.is_self
             || p.session == 0
-            || match p.exe() {
-                None => true,
-                Some(name) => self.rules.is_staff(&name),
-            }
+            || p.image_path.is_none()
+            || p.exe().is_none_or(|name| self.rules.is_staff(&name))
     }
 
     fn is_vm_host(&self, p: &Process) -> bool {
@@ -292,8 +297,9 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
         tenant.lease_bytes += p.lease_bytes;
         tenant.process_count += 1;
         tenant.pids.push(pid);
-        tenant.packed_bytes += p.lease_bytes.saturating_sub(rent);
-        tenant.gpu_bytes += p.gpu_shared_bytes;
+        let gpu = gpu_owned(p);
+        tenant.packed_bytes += p.lease_bytes.saturating_sub(rent).saturating_sub(gpu);
+        tenant.gpu_bytes += gpu;
         tenant.has_window |= p.has_visible_window;
         if p.started_at_ms > 0
             && (tenant.started_at_ms == 0 || p.started_at_ms < tenant.started_at_ms)
@@ -314,23 +320,63 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
         .filter(|p| compression(p))
         .map(|p| p.rent_bytes.max(p.working_set_bytes))
         .sum();
-    let services_bytes = snapshot
-        .processes
-        .iter()
-        .filter(|p| grouper.roles[&p.pid] == Role::Staff && !compression(p))
-        .map(|p| p.rent_bytes)
+    let staff = || {
+        snapshot
+            .processes
+            .iter()
+            .filter(|p| grouper.roles[&p.pid] == Role::Staff && !compression(p))
+    };
+    let services_bytes = staff().map(|p| p.rent_bytes).sum();
+    let staff_packed_bytes = staff()
+        .map(|p| {
+            p.lease_bytes
+                .saturating_sub(p.rent_bytes)
+                .saturating_sub(gpu_owned(p))
+        })
         .sum();
-    let gallery_bytes = snapshot
-        .gpu_shared_bytes
-        .max(snapshot.processes.iter().map(|p| p.gpu_shared_bytes).sum());
+    let gpu_owned_bytes = snapshot.processes.iter().map(gpu_owned).sum();
+    let gallery_bytes = match snapshot.gpu_shared_bytes {
+        0 => gpu_owned_bytes,
+        adapters => adapters,
+    };
     Grouping {
         tenants: tenants.into_values().collect(),
         roles: grouper.roles,
         own_bytes,
         boxes_bytes,
         gallery_bytes,
+        gpu_owned_bytes,
         services_bytes,
+        staff_packed_bytes,
     }
+}
+
+/// Graphics memory a process holds itself, estimated. Windows' Shared
+/// Usage counts every surface a process can see, so the desktop compositor,
+/// which sees every window's, reports many times what it holds (11 GB on
+/// the owner's 16 GB PC, with 2.7 GB in use by the adapter). A process pays
+/// commit for the graphics memory it allocates and none for what it only
+/// sees, so its share is capped at its commit beyond its working set. On
+/// the owner's PC these estimates summed to 2,868 MiB against the
+/// adapter's measured 2,759.
+pub fn gpu_owned(p: &Process) -> u64 {
+    p.gpu_shared_bytes
+        .min(p.lease_bytes.saturating_sub(p.rent_bytes))
+}
+
+/// Staff, Vacant and the gallery, in that order of trust: Vacant is
+/// measured and comes first, as in `balance`; the gallery comes out of
+/// what would be Staff, never out of Vacant. Returns
+/// `(staff_bytes, vacant_bytes, gallery_bytes)`.
+pub fn balance_with_gallery(
+    capacity: u64,
+    available: u64,
+    rent_and_boxes: u64,
+    gallery: u64,
+) -> (u64, u64, u64) {
+    let (staff, vacant) = balance(capacity, available, rent_and_boxes);
+    let gallery = gallery.min(staff);
+    (staff - gallery, vacant, gallery)
 }
 
 /// Staff and Vacant from capacity, available memory and the tenants' rent
@@ -374,12 +420,17 @@ pub fn building(snapshot: &Snapshot, rules: &Rules, lease: &Lease) -> Building {
 pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Building {
     let rent = grouping.rent_bytes();
     let boxes = grouping.boxes_bytes;
-    let gallery = grouping.gallery_bytes;
-    let (staff, vacant) = balance(
+    let (staff, vacant, gallery) = balance_with_gallery(
         snapshot.capacity_bytes,
         snapshot.available_bytes,
-        rent.saturating_add(boxes).saturating_add(gallery),
+        rent.saturating_add(boxes),
+        grouping.gallery_bytes,
     );
+    // The estimates may add up to more than the gallery holds: fit them.
+    let fitted = |gpu: u64| -> u64 {
+        let owned = u128::from(grouping.gpu_owned_bytes.max(gallery).max(1));
+        (u128::from(gpu) * u128::from(gallery) / owned) as u64
+    };
     // Installed memory Windows never gets; unknown without its total.
     let hardware = match snapshot.physical_total_bytes {
         0 => 0,
@@ -408,6 +459,7 @@ pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Bu
         boxes_bytes: boxes,
         gallery_bytes: gallery,
         staff_parts: StaffParts::cut(staff, &measured),
+        staff_packed_bytes: grouping.staff_packed_bytes,
         tenants: grouping
             .tenants
             .into_iter()
@@ -418,7 +470,7 @@ pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Bu
                 lease_bytes: t.lease_bytes,
                 process_count: t.process_count,
                 packed_bytes: t.packed_bytes,
-                gpu_bytes: t.gpu_bytes,
+                gpu_bytes: fitted(t.gpu_bytes),
                 flags: Vec::new(),
             })
             .collect(),

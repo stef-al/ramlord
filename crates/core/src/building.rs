@@ -24,8 +24,8 @@ pub struct Tenant {
     /// Committed memory not in RAM now (see `tenants::TenantSample`).
     #[serde(default)]
     pub packed_bytes: u64,
-    /// Graphics memory its processes hold in RAM: its pictures in the
-    /// gallery. Not part of its rent; part of its lease.
+    /// Graphics memory its processes hold in RAM, estimated and fitted to
+    /// the gallery: its pictures. Not part of its rent; part of its lease.
     #[serde(default)]
     pub gpu_bytes: u64,
     #[serde(default)]
@@ -193,6 +193,10 @@ pub struct Building {
     /// say; the Staff card then shows Staff as one row.
     #[serde(default)]
     pub staff_parts: StaffParts,
+    /// Staff processes' committed memory not in RAM, for Staff's share of
+    /// the boxes (see `Tenant::packed_bytes`).
+    #[serde(default)]
+    pub staff_packed_bytes: u64,
     pub tenants: Vec<Tenant>,
 }
 
@@ -355,6 +359,7 @@ pub(crate) fn test_building(staff: u64, tenants: &[(&str, u64)], vacant: u64) ->
         boxes_bytes: 0,
         gallery_bytes: 0,
         staff_parts: StaffParts::default(),
+        staff_packed_bytes: 0,
         tenants: tenants
             .iter()
             .map(|&(name, rent_bytes)| Tenant {

@@ -38,6 +38,7 @@ compression = ["memcompression", "memory compression"]
 "steamwebhelper.exe" = "steam.exe"
 "steamservice.exe" = "steam.exe"
 "gameoverlayui.exe" = "steam.exe"
+"brhostsvr.exe" = "br-uxendm.exe"
 
 [names]
 "chrome.exe" = "Chrome"

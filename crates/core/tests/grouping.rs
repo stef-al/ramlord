@@ -337,9 +337,13 @@ fn graphics_memory_hangs_in_the_gallery_and_staff_breaks_down() {
     pc.0.modified_bytes = 100 * MIB;
     pc.0.gpu_shared_bytes = 1600 * MIB; // more than the processes' sum
     pc.add(200, 100, Some(CHROME), 900);
-    pc.add(201, 200, Some(CHROME), 60).gpu_shared_bytes = 1000 * MIB;
+    // Its GPU process pays commit for its pictures.
+    let gpu = pc.add(201, 200, Some(CHROME), 60);
+    gpu.gpu_shared_bytes = 1000 * MIB;
+    gpu.lease_bytes = 1100 * MIB;
     let dwm = pc.add(90, 4, Some(r"C:\Windows\System32\dwm.exe"), 150);
     dwm.gpu_shared_bytes = 300 * MIB;
+    dwm.lease_bytes = 500 * MIB;
     let g = group(&pc.0, &Rules::builtin());
     assert_eq!(g.gallery_bytes, 1600 * MIB);
     let chrome = g.tenant_of(200).unwrap();
@@ -358,6 +362,86 @@ fn graphics_memory_hangs_in_the_gallery_and_staff_breaks_down() {
     assert_eq!(parts.file_cache_bytes, 250 * MIB);
     assert_eq!(parts.modified_bytes, 100 * MIB);
     assert_eq!(parts.sum(), b.staff_bytes);
+}
+
+/// From the owner's second dump: Windows' Shared Usage counts what a
+/// process can see, so the desktop compositor reported 11,458 MiB on a
+/// 16 GiB PC whose adapter held 2,759 MiB. What a process holds is capped
+/// at its commit beyond its working set; the adapter's total is the
+/// gallery, which never squeezes Vacant.
+#[test]
+fn graphics_memory_is_what_a_process_pays_commit_for() {
+    let mut pc = Pc::new();
+    pc.0.available_bytes = 743 * MIB;
+    pc.0.gpu_shared_bytes = 2759 * MIB;
+    let mut gpu = |pid: u32, parent: u32, path: &str, private: u64, commit: u64, shared: u64| {
+        let p = pc.add(pid, parent, Some(path), private);
+        p.lease_bytes = commit * MIB;
+        p.gpu_shared_bytes = shared * MIB;
+        p.has_visible_window = true;
+    };
+    gpu(1724, 1112, r"C:\Windows\System32\dwm.exe", 175, 510, 11458);
+    gpu(44852, 100, r"C:\Windows\System32\mstsc.exe", 23, 568, 373);
+    gpu(
+        22292,
+        100,
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        237,
+        1207,
+        302,
+    );
+    let g = group(&pc.0, &Rules::builtin());
+    assert_eq!(g.gallery_bytes, 2759 * MIB, "the adapter's measure");
+    // dwm sees 11,458 MiB but pays commit for 335.
+    assert_eq!(g.gpu_owned_bytes, (335 + 373 + 302) * MIB);
+    let edge = g.tenant_of(22292).unwrap();
+    assert_eq!(edge.gpu_bytes, 302 * MIB);
+    // Its packed memory leaves its pictures out: 1,207 - 237 - 302.
+    assert_eq!(edge.packed_bytes, 668 * MIB);
+    let b = building(&pc.0, &Rules::builtin(), &Lease::placeholder());
+    b.validate().unwrap();
+    assert_eq!(
+        b.vacant_bytes,
+        743 * MIB,
+        "the gallery never squeezes Vacant"
+    );
+    assert_eq!(b.gallery_bytes, 2759 * MIB);
+    assert_eq!(
+        b.tenants.iter().map(|t| t.gpu_bytes).sum::<u64>(),
+        (373 + 302) * MIB
+    );
+}
+
+/// A gallery larger than what Staff leaves is cut to fit, and the
+/// tenants' pictures with it; Vacant stays as measured.
+#[test]
+fn the_gallery_comes_out_of_staff_only() {
+    let mut pc = Pc::new();
+    pc.0.gpu_shared_bytes = 20 * GIB; // nonsense, as the per-process sum was
+    let edge = pc.add(200, 100, Some(CHROME), 1000);
+    edge.lease_bytes = 9 * GIB;
+    edge.gpu_shared_bytes = 8 * GIB;
+    let b = building(&pc.0, &Rules::builtin(), &Lease::placeholder());
+    b.validate().unwrap();
+    assert_eq!(b.vacant_bytes, 6 * GIB);
+    assert_eq!(b.staff_bytes, 0);
+    assert_eq!(b.gallery_bytes, 10 * GIB - 1000 * MIB);
+    assert!(b.tenants[0].gpu_bytes <= b.gallery_bytes);
+}
+
+/// Processes Windows will not open have no image path; the process list
+/// still names them (csrss.exe, winlogon.exe, an audio service). They are
+/// Staff, as they were before RAMlord read the process list.
+#[test]
+fn a_process_that_cannot_be_opened_is_staff_though_named() {
+    let mut pc = Pc::new();
+    let csrss = pc.add(1048, 1028, None, 1);
+    csrss.image_name = Some("csrss.exe".into());
+    let audio = pc.add(11768, 100, None, 2);
+    audio.image_name = Some("RtkAudUService64.exe".into());
+    assert_eq!(pc.role(1048), Role::Staff);
+    assert_eq!(pc.role(11768), Role::Staff);
+    assert!(pc.tenants().is_empty());
 }
 
 /// From the owner's PC: HP Sure Click's micro-VM manager runs in session 0

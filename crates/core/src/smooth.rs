@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::building::{Building, StaffParts};
 use crate::layout::split_named;
-use crate::tenants::balance;
+use crate::tenants::balance_with_gallery;
 
 /// Samples older than this no longer count.
 pub const WINDOW_MS: u64 = 10_000;
@@ -84,14 +84,11 @@ impl Smoother {
         }
         let vacant = average(&|s| s.vacant);
         let boxes = average(&|s| s.boxes);
-        let gallery = average(&|s| s.gallery);
-        let (staff, vacant) = balance(
+        let (staff, vacant, gallery) = balance_with_gallery(
             smoothed.capacity_bytes,
             vacant,
-            smoothed
-                .rent_bytes()
-                .saturating_add(boxes)
-                .saturating_add(gallery),
+            smoothed.rent_bytes().saturating_add(boxes),
+            average(&|s| s.gallery),
         );
         smoothed.staff_bytes = staff;
         smoothed.vacant_bytes = vacant;
