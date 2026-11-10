@@ -107,14 +107,47 @@ fn usage_errors_exit_2() {
 }
 
 #[test]
-fn modes_of_later_milestones_exit_5() {
-    assert_eq!(exit_code(&["--dump", "out.json"]), 5);
-    assert_eq!(exit_code(&["--self-test", "out.json"]), 5);
+fn snapshot_render_matches_the_golden_image() {
+    let dir = scratch("snapshot");
+    let tower = dir.join("tower.png");
+    let status = ramlord()
+        .arg("--snapshot")
+        .arg(repo().join("fixtures/snapshot-desk.json"))
+        .arg("--render")
+        .arg(&tower)
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let golden = pixels(&repo().join("fixtures/golden/snapshot-desk-tower.png"));
+    assert!(
+        pixels(&tower) == golden,
+        "the tower differs from the golden image"
+    );
+    std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn an_invalid_snapshot_exits_3() {
+    let fixture = repo().join("fixtures/sample-building.json");
+    let out = std::env::temp_dir().join("ramlord-test-never-written.png");
+    assert_eq!(
+        exit_code(&[
+            "--snapshot",
+            fixture.to_str().unwrap(),
+            "--render",
+            out.to_str().unwrap()
+        ]),
+        3
+    );
+}
+
+/// On Windows these open a window or sample the PC; CI runs them there.
 #[cfg(not(windows))]
 #[test]
-fn the_window_modes_need_windows() {
+fn the_windows_modes_need_windows() {
     assert_eq!(exit_code(&[]), 5);
+    assert_eq!(exit_code(&["--minimized"]), 5);
     assert_eq!(exit_code(&["--demo"]), 5);
+    assert_eq!(exit_code(&["--dump", "out.json"]), 5);
+    assert_eq!(exit_code(&["--self-test", "out.json"]), 5);
 }

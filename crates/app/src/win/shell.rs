@@ -1,78 +1,186 @@
-//! The window: one frame scaled by a whole number with `StretchDIBits`
-//! and `COLORONCOLOR`. M1 shows a still frame and takes no input; closing
-//! the window ends the program.
+//! The window: one frame scaled by a whole number with `StretchDIBits` and
+//! `COLORONCOLOR`. It is a fixed size: the canvas times the largest scale
+//! from 2 to 5 that fits 70% of its monitor's work area, chosen again when
+//! the window moves to another monitor or the display changes. Per-monitor
+//! DPI awareness v2 keeps the pixels square at any display scaling.
+//!
+//! Live, it samples every 2 seconds (5 while minimized) and redraws only
+//! when the frame changes. Closing the window ends the program; the tray
+//! comes with M5.
 
-use std::sync::OnceLock;
+use std::cell::RefCell;
 
 use ramlord_core::Frame;
+use ramlord_core::live::Live;
 use ramlord_core::render::pick_scale;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, COLORONCOLOR, DIB_RGB_COLORS, EndPaint,
-    PAINTSTRUCT, SRCCOPY, SetStretchBltMode, StretchDIBits, UpdateWindow,
+    GetMonitorInfoW, HMONITOR, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
+    MONITORINFO, MonitorFromPoint, MonitorFromRect, MonitorFromWindow, PAINTSTRUCT, SRCCOPY,
+    SetStretchBltMode, StretchDIBits, UpdateWindow,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
+    SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetMessageW, IDC_ARROW, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SPI_GETWORKAREA,
-    SW_SHOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, ShowWindow, SystemParametersInfoW,
-    TranslateMessage, WINDOW_EX_STYLE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WNDCLASSW, WS_CAPTION,
-    WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+    GetMessageW, IDC_ARROW, IsIconic, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SW_SHOW,
+    SW_SHOWMINNOACTIVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetTimer, SetWindowPos,
+    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_DPICHANGED, WM_ERASEBKGND, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX,
+    WS_OVERLAPPED, WS_SYSMENU,
 };
 use windows::core::w;
 
-/// What the window shows. Set once before the window opens.
-struct Picture {
-    frame: Frame,
-    scale: u32,
+use super::provider::Provider;
+
+/// Sampling intervals (SPEC.md, Timing).
+const SAMPLE_MS: u32 = 2_000;
+const SAMPLE_HIDDEN_MS: u32 = 5_000;
+const TIMER_ID: usize = 1;
+
+/// A fixed size: no thick frame, no maximize box.
+const STYLE: WINDOW_STYLE =
+    WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0);
+
+/// What the window shows.
+pub enum Content {
+    /// One frame that never changes: `--demo`.
+    Still(Frame),
+    /// The PC itself.
+    Live { provider: Provider, live: Box<Live> },
 }
 
-static PICTURE: OnceLock<Picture> = OnceLock::new();
+struct State {
+    content: Content,
+    frame: Frame,
+    scale: u32,
+    interval_ms: u32,
+}
 
-/// The work area of the primary monitor in pixels, or zero if unknown.
-fn work_area() -> (u32, u32) {
-    let mut area = RECT::default();
-    // SAFETY: SPI_GETWORKAREA writes one RECT to the pointer we pass.
-    let ok = unsafe {
-        SystemParametersInfoW(
-            SPI_GETWORKAREA,
-            0,
-            Some((&raw mut area).cast()),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
-        )
+thread_local! {
+    static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+}
+
+fn work_area(monitor: HMONITOR) -> (u32, u32) {
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
     };
-    match ok {
-        Ok(()) => (
-            u32::try_from(area.right - area.left).unwrap_or(0),
-            u32::try_from(area.bottom - area.top).unwrap_or(0),
-        ),
-        Err(_) => (0, 0),
+    // SAFETY: `cbSize` is set; the call fills `info`.
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        return (0, 0);
+    }
+    let r = info.rcWork;
+    (
+        u32::try_from(r.right - r.left).unwrap_or(0),
+        u32::try_from(r.bottom - r.top).unwrap_or(0),
+    )
+}
+
+/// The outer window size for a client area of `w` by `h` at `dpi`.
+fn window_size(hwnd: Option<HWND>, w: i32, h: i32) -> (i32, i32) {
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: w,
+        bottom: h,
+    };
+    // SAFETY: plain calls; `rect` is a live local.
+    let ok =
+        unsafe {
+            match hwnd {
+                Some(hwnd) => AdjustWindowRectExForDpi(
+                    &mut rect,
+                    STYLE,
+                    false,
+                    WINDOW_EX_STYLE::default(),
+                    GetDpiForWindow(hwnd),
+                )
+                .is_ok(),
+                None => false,
+            }
+        } || unsafe { AdjustWindowRectEx(&mut rect, STYLE, false, WINDOW_EX_STYLE::default()) }
+            .is_ok();
+    if ok {
+        (rect.right - rect.left, rect.bottom - rect.top)
+    } else {
+        (w, h)
     }
 }
 
-/// Opens a fixed-size window showing `frame` at the largest whole scale
-/// from 2 to 5 that fits 70% of the work area, and returns when it closes.
-pub fn show(frame: Frame) -> Result<(), String> {
-    // Per-monitor DPI awareness v2 keeps the pixels square. It fails under
-    // Wine; that is harmless.
+/// Picks the scale for `monitor`, stores it and returns the client size.
+fn rescale(monitor: HMONITOR) -> (i32, i32) {
+    let (work_w, work_h) = work_area(monitor);
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let Some(state) = s.as_mut() else {
+            return (0, 0);
+        };
+        state.scale = pick_scale(state.frame.width, state.frame.height, work_w, work_h);
+        (
+            (state.frame.width * state.scale) as i32,
+            (state.frame.height * state.scale) as i32,
+        )
+    })
+}
+
+/// Sizes the window for the monitor it is on.
+fn fit(hwnd: HWND) {
+    // SAFETY: plain query on our window.
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let (cw, ch) = rescale(monitor);
+    let (w, h) = window_size(Some(hwnd), cw, ch);
+    // SAFETY: resizes our own window; no state is borrowed here.
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            w,
+            h,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Opens the window and returns when it closes.
+pub fn show(content: Content, minimized: bool) -> Result<(), String> {
+    // Fails under Wine; that is harmless.
     // SAFETY: plain call with a predefined context value.
     let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 
-    let (work_w, work_h) = work_area();
-    let scale = pick_scale(frame.width, frame.height, work_w, work_h);
-    let client_w = (frame.width * scale) as i32;
-    let client_h = (frame.height * scale) as i32;
-    PICTURE
-        .set(Picture { frame, scale })
-        .map_err(|_| "the window is already open".to_string())?;
+    let mut content = content;
+    let frame = match &mut content {
+        Content::Still(frame) => frame.clone(),
+        Content::Live { provider, live } => {
+            let snapshot = provider.sample()?;
+            live.update(&snapshot).map_err(|e| e.to_string())?;
+            live.frame().cloned().ok_or("no frame")?
+        }
+    };
+    let live = matches!(content, Content::Live { .. });
+    STATE.with(|s| {
+        *s.borrow_mut() = Some(State {
+            content,
+            frame,
+            scale: 2,
+            interval_ms: SAMPLE_MS,
+        })
+    });
+    // A first size from the primary monitor; `fit` corrects it once the
+    // window knows its own monitor and DPI.
+    // SAFETY: plain query.
+    let primary = unsafe { MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY) };
+    let (cw, ch) = rescale(primary);
+    let (w, h) = window_size(None, cw, ch);
 
-    // A fixed size: no thick frame, no maximize box.
-    let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     let class = w!("RAMlordWindow");
-
     // SAFETY: standard Win32 window creation and message loop on this
     // thread. Every pointer passed points to a live local for the call.
     unsafe {
@@ -87,31 +195,34 @@ pub fn show(frame: Frame) -> Result<(), String> {
         if RegisterClassW(&wc) == 0 {
             return Err("RegisterClassW failed".into());
         }
-        let mut rect = RECT {
-            left: 0,
-            top: 0,
-            right: client_w,
-            bottom: client_h,
-        };
-        AdjustWindowRectEx(&mut rect, style, false, WINDOW_EX_STYLE::default())
-            .map_err(|e| format!("AdjustWindowRectEx: {e}"))?;
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class,
             w!("RAMlord"),
-            style,
+            STYLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
+            w,
+            h,
             None,
             None,
             Some(instance.into()),
             None,
         )
         .map_err(|e| format!("CreateWindowExW: {e}"))?;
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        fit(hwnd);
+        let _ = ShowWindow(
+            hwnd,
+            if minimized {
+                SW_SHOWMINNOACTIVE
+            } else {
+                SW_SHOW
+            },
+        );
         let _ = UpdateWindow(hwnd);
+        if live {
+            SetTimer(Some(hwnd), TIMER_ID, SAMPLE_MS, None);
+        }
 
         let mut msg = MSG::default();
         loop {
@@ -128,10 +239,82 @@ pub fn show(frame: Frame) -> Result<(), String> {
     Ok(())
 }
 
+/// One sample: draw it, and repaint only if the frame changed.
+fn tick(hwnd: HWND) {
+    // SAFETY: plain query on our window.
+    let hidden = unsafe { IsIconic(hwnd) }.as_bool();
+    let want = if hidden { SAMPLE_HIDDEN_MS } else { SAMPLE_MS };
+    let (changed, retime) = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let Some(state) = s.as_mut() else {
+            return (false, false);
+        };
+        let retime = state.interval_ms != want;
+        state.interval_ms = want;
+        let Content::Live { provider, live } = &mut state.content else {
+            return (false, retime);
+        };
+        // A failed sample keeps the last frame; the next tick tries again.
+        let Ok(snapshot) = provider.sample() else {
+            return (false, retime);
+        };
+        match live.update(&snapshot) {
+            Ok(true) => {
+                if let Some(frame) = live.frame() {
+                    state.frame = frame.clone();
+                }
+                (true, retime)
+            }
+            _ => (false, retime),
+        }
+    });
+    // SAFETY: timer and repaint requests on our own window.
+    unsafe {
+        if retime {
+            SetTimer(Some(hwnd), TIMER_ID, want, None);
+        }
+        if changed {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+}
+
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => {
             paint(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            tick(hwnd);
+            LRESULT(0)
+        }
+        // Moved to a monitor with another DPI: keep the suggested position,
+        // pick the scale for that monitor.
+        WM_DPICHANGED => {
+            // SAFETY: for WM_DPICHANGED, lparam points to the suggested RECT.
+            let suggested = unsafe { *(lparam.0 as *const RECT) };
+            // SAFETY: plain query.
+            let monitor = unsafe { MonitorFromRect(&suggested, MONITOR_DEFAULTTONEAREST) };
+            let (cw, ch) = rescale(monitor);
+            let (w, h) = window_size(Some(hwnd), cw, ch);
+            // SAFETY: moves and resizes our own window.
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    suggested.left,
+                    suggested.top,
+                    w,
+                    h,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            LRESULT(0)
+        }
+        WM_DISPLAYCHANGE => {
+            fit(hwnd);
             LRESULT(0)
         }
         // The frame covers the whole client area; skipping the erase
@@ -151,8 +334,10 @@ fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     // SAFETY: BeginPaint and EndPaint pair up on the same PAINTSTRUCT.
     let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
-    if let Some(picture) = PICTURE.get() {
-        let frame = &picture.frame;
+    STATE.with(|s| {
+        let Ok(s) = s.try_borrow() else { return };
+        let Some(state) = s.as_ref() else { return };
+        let frame = &state.frame;
         let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -174,8 +359,8 @@ fn paint(hwnd: HWND) {
                 hdc,
                 0,
                 0,
-                (frame.width * picture.scale) as i32,
-                (frame.height * picture.scale) as i32,
+                (frame.width * state.scale) as i32,
+                (frame.height * state.scale) as i32,
                 0,
                 0,
                 frame.width as i32,
@@ -186,7 +371,7 @@ fn paint(hwnd: HWND) {
                 SRCCOPY,
             );
         }
-    }
+    });
     // SAFETY: ends the paint begun above.
     unsafe {
         let _ = EndPaint(hwnd, &ps);

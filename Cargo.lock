@@ -140,6 +140,7 @@ version = "0.0.0"
 dependencies = [
  "png",
  "ramlord-core",
+ "serde_json",
  "windows",
 ]
 
