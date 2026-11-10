@@ -43,7 +43,8 @@ cargo run -p ramlord -- --snapshot fixtures/snapshot-desk.json --render desk.png
 When a rendering change is intended, regenerate the golden images with the
 same commands into `fixtures/golden/` (`sample-tower.png`,
 `sample-rent-roll.png`, `snapshot-desk-tower.png`, `snapshot-packed-tower.png`
-from `fixtures/snapshot-packed.json`), look at them, and say in the commit
+from `fixtures/snapshot-packed.json`, `snapshot-gallery-tower.png` from
+`fixtures/snapshot-gallery.json`), look at them, and say in the commit
 what changed and why. `timeline-full-tower.png` is the last frame
 of `fixtures/timelines/full.json`; write it, and a frame at every checkpoint
 of every timeline, with:
@@ -53,8 +54,9 @@ RAMLORD_PNG_DIR=/some/dir cargo test -p ramlord-core --test flags
 ```
 
 `details-card.png` is Discord's card on the sample building. The input
-tests write it as `details-discord.png`, with Chrome's card and every
-eviction dialog on the desk snapshot:
+tests write it as `details-discord.png`, with Chrome's card, every
+eviction dialog, and Chrome's card and the Staff card on the gallery
+snapshot:
 
 ```bash
 RAMLORD_PNG_DIR=/some/dir cargo test -p ramlord-core --test input
@@ -64,6 +66,17 @@ Clicks and keys go through `ramlord_core::ui`: `scene::window` returns
 the click regions with the draw list, `Ui::input` turns a click or key into
 `Command`s for the Windows layer, and eviction is the `Eviction` state
 machine. `crates/app/src/win/evict.rs` only carries the commands out.
+
+Beyond SPEC.md, at the owner's request: the boxes in the basement
+(compressed memory, the Memory Compression process), the gallery (graphics
+memory in RAM, per process from the GPU Process Memory counters), VM hosts
+as tenants billed for their whole working set (`vm_hosts` in the rules,
+HP Sure Click included), the Staff card with Staff's parts
+(`StaffParts`, cut so they sum to Staff), and the details card's lease
+breakdown (in RAM, gallery, boxes share, on paper). The building sums
+Staff, rent, gallery, boxes and Vacant to capacity.
+`crates/app/src/win/counters.rs` reads the performance counters through
+pdh.dll by their English names.
 
 Timelines (`fixtures/timelines/*.json`, format in
 `crates/core/tests/timeline/mod.rs`) describe hours of samples, sleeps and
