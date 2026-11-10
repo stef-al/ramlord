@@ -1,0 +1,85 @@
+name: ci
+
+# Every push to every branch: no pull request exists yet when Claude first pushes.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  linux:
+    name: linux (rungs 1 and 3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy --target x86_64-pc-windows-gnu
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo fmt --check
+        run: .github/scripts/step.sh cargo fmt --all --check
+
+      - name: cargo clippy
+        run: .github/scripts/step.sh cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: .github/scripts/step.sh cargo test --workspace --locked
+
+      - name: cargo check, Windows target
+        run: .github/scripts/step.sh cargo check --workspace --all-targets --locked --target x86_64-pc-windows-gnu
+
+      - name: cargo clippy, Windows target
+        run: .github/scripts/step.sh cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings
+
+  windows:
+    name: windows (rung 5)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo build --release
+        run: .github/scripts/step.sh cargo build --release --locked
+
+      - name: cargo test
+        run: .github/scripts/step.sh cargo test --workspace --locked
+
+      - name: Exe size
+        run: |
+          size=$(stat -c %s target/release/ramlord.exe)
+          echo "::notice title=Exe size::ramlord.exe is ${size} bytes (budget 5 MB)"
