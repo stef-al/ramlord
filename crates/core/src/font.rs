@@ -403,6 +403,12 @@ pub fn glyph(c: char) -> &'static Glyph {
         .expect("the font has a ? glyph")
 }
 
+/// Whether `c` has a glyph of its own (or folds onto one), rather than
+/// being drawn as `?`.
+pub fn has_glyph(c: char) -> bool {
+    c == '?' || !std::ptr::eq(glyph(c), glyph('?'))
+}
+
 /// Latin letters with accents, and the base letter each is drawn as.
 /// Covers Latin-1 and Latin Extended-A, so names such as "Správce úloh"
 /// draw as SPRAVCE ULOH rather than with question marks.
@@ -485,6 +491,16 @@ mod tests {
         // Currency symbols a custom price may use have their own.
         for c in ['€', '£', '¥'] {
             assert_ne!(glyph(c), glyph('?'), "{c}");
+        }
+    }
+
+    #[test]
+    fn glyphs_are_known_before_drawing() {
+        for c in "Az09 ?.é€".chars() {
+            assert!(has_glyph(c), "{c}");
+        }
+        for c in "Ж中#\u{1F600}".chars() {
+            assert!(!has_glyph(c), "{c}");
         }
     }
 

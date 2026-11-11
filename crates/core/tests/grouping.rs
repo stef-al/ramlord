@@ -569,3 +569,32 @@ fn memory_compression_becomes_boxes_and_tenants_show_what_they_packed() {
     // The boxes come out of what used to be Staff.
     assert_eq!(b.staff_bytes, 16 * GIB - 6 * GIB - 1000 * MIB - 1536 * MIB);
 }
+
+/// Apps installed in folders named in any script are grouped, named and
+/// drawn like any other: nothing reads a path by bytes.
+#[test]
+fn apps_in_folders_of_any_script_become_tenants() {
+    let mut pc = Pc::new();
+    let game = pc.add(700, 100, Some(r"D:\游戏\原神\YuanShen.exe"), 900);
+    game.has_visible_window = true;
+    pc.add(710, 100, Some(r"D:\ab\Программа\Блокнот.exe"), 200)
+        .has_visible_window = true;
+    pc.add(720, 100, Some(r"C:\Users\Zoë\Ünïcödé\日本語"), 100)
+        .has_visible_window = true;
+    // Under the Windows folder without a window: Staff, whatever its name.
+    pc.add(730, 100, Some(r"C:\Windows\System32\字体.exe"), 10);
+    assert_eq!(
+        pc.tenants(),
+        [
+            row("YuanShen", 1, 900),
+            row("Блокнот", 1, 200),
+            row("日本語", 1, 100),
+        ]
+    );
+    assert_eq!(pc.role(730), Role::Staff);
+    let b = building(&pc.0, &Rules::builtin(), &Lease::placeholder());
+    b.validate().expect("the building balances");
+    // Drawn without a panic; names without glyphs show question marks.
+    let (frame, _) = ramlord_core::render_tower(&b, &ramlord_core::HueBook::new());
+    assert_eq!((frame.width, frame.height), (384, 240));
+}

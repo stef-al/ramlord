@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 
 use crate::building::{Building, Price, StaffParts, Tenant};
 use crate::date::Date;
+use crate::font::has_glyph;
 use crate::rules::{Helper, Rules};
 use crate::snapshot::{Process, Snapshot};
 
@@ -102,9 +103,12 @@ impl Grouping {
 /// True for a path under a `?:\Windows\` folder or `%SystemRoot%\`.
 fn under_windows_dir(path: &str) -> bool {
     let lower = path.to_lowercase().replace('/', "\\");
-    let bytes = lower.as_bytes();
-    let drive =
-        bytes.len() > 11 && bytes[0].is_ascii_alphabetic() && &lower[1..11] == ":\\windows\\";
+    // Compared as bytes: a path may hold any script, and a string slice at
+    // a fixed byte would cut a character in two.
+    let drive = match lower.as_bytes() {
+        [letter, rest @ ..] => letter.is_ascii_alphabetic() && rest.starts_with(b":\\windows\\"),
+        [] => false,
+    };
     drive || lower.starts_with("%systemroot%\\") || lower.starts_with("%windir%\\")
 }
 
@@ -234,21 +238,42 @@ pub fn tenant_name(root: &Process, rules: &Rules) -> String {
         .unwrap_or("")
         .split_whitespace()
         .collect();
-    if let Some((first, rest)) = words.split_first() {
+    let described = words.split_first().map(|(first, rest)| {
         if !rest.is_empty() && rules.companies.contains(&first.to_lowercase()) {
-            return rest.join(" ");
+            rest.join(" ")
+        } else {
+            words.join(" ")
         }
-        return words.join(" ");
-    }
-    let stem = root
+    });
+    // The file's name without `.exe`: from the path, or from the process
+    // list when the process could not be opened.
+    let file = root
         .image_path
         .as_deref()
         .map(|p| p.rsplit(['\\', '/']).next().unwrap_or(p))
+        .or(root.image_name.as_deref())
+        .filter(|name| !name.is_empty())
         .unwrap_or("?");
-    match stem.len().checked_sub(4) {
-        Some(cut) if stem[cut..].eq_ignore_ascii_case(".exe") => stem[..cut].to_string(),
+    let stem = match file.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && extension.eq_ignore_ascii_case("exe") => {
+            stem
+        }
+        _ => file,
+    };
+    // The font is Latin. A description in another script (a Russian
+    // Windows calls Task Manager "Диспетчер задач") would draw as question
+    // marks, so the file's name stands in when it reads better.
+    match described {
+        Some(name) if readable(&name) || !readable(stem) => name,
         _ => stem.to_string(),
     }
+}
+
+/// Whether at least half of a name's characters have glyphs.
+fn readable(name: &str) -> bool {
+    let letters = name.chars().filter(|c| !c.is_whitespace());
+    let drawn = letters.clone().filter(|&c| has_glyph(c)).count();
+    drawn > 0 && drawn * 2 >= letters.count()
 }
 
 /// Groups a snapshot's processes into tenants.
@@ -514,6 +539,45 @@ mod tests {
         assert!(!under_windows_dir("windows"));
     }
 
+    /// Paths are sliced by bytes nowhere: a folder in Chinese, Cyrillic or
+    /// with an accent at the wrong byte must not stop the app.
+    #[test]
+    fn paths_in_any_script_are_read_without_slicing_a_character() {
+        for path in [
+            r"D:\游戏\原神\game.exe",
+            r"D:\ab\Программа\app.exe",
+            r"c:\abcdefgä\x.exe",
+            r"C:\Wïndows\x.exe",
+            r"é:\windows\x.exe",
+            "日本語",
+            "",
+        ] {
+            assert!(!under_windows_dir(path), "{path}");
+        }
+        assert!(under_windows_dir(r"C:\Windows\Fonts\字体.exe"));
+        let rules = Rules::builtin();
+        let name = |p| tenant_name(&named(Some(p), None), &rules);
+        assert_eq!(name(r"C:\x\日本語"), "日本語");
+        assert_eq!(name(r"C:\x\日本.exe"), "日本");
+        assert_eq!(name(r"C:\x\über"), "über");
+        assert_eq!(name(r"C:\x\é.EXE"), "é");
+        assert_eq!(name(r"C:\x\.exe"), ".exe");
+        assert_eq!(name(r"C:\x\exe"), "exe");
+    }
+
+    /// A process that could not be opened has no path, but the process
+    /// list still names it.
+    #[test]
+    fn a_tenant_without_a_path_is_named_after_its_image() {
+        let rules = Rules::builtin();
+        let p = Process {
+            image_name: Some("NewVmHost.exe".into()),
+            ..Process::default()
+        };
+        assert_eq!(tenant_name(&p, &rules), "NewVmHost");
+        assert_eq!(tenant_name(&Process::default(), &rules), "?");
+    }
+
     #[test]
     fn balance_leaves_staff_as_the_remainder() {
         assert_eq!(balance(100, 30, 50), (20, 30));
@@ -568,5 +632,35 @@ mod tests {
             "Graphics Command Center"
         );
         assert_eq!(name(Some(r"C:\x\tool"), Some("")), "tool");
+    }
+
+    #[test]
+    fn a_description_the_font_cannot_draw_gives_way_to_the_file_name() {
+        let rules = Rules::builtin();
+        let name = |p, d| tenant_name(&named(p, d), &rules);
+        // A Russian Windows: Task Manager and Notepad.
+        assert_eq!(
+            name(
+                Some(r"C:\Windows\System32\Taskmgr.exe"),
+                Some("Диспетчер задач")
+            ),
+            "Taskmgr"
+        );
+        assert_eq!(name(Some(r"C:\x\notepad.exe"), Some("Блокнот")), "notepad");
+        // Czech and German read fine: accents fold onto their letters.
+        assert_eq!(
+            name(Some(r"C:\x\Taskmgr.exe"), Some("Správce úloh")),
+            "Správce úloh"
+        );
+        // Neither reads: the description stays, as the more telling one.
+        assert_eq!(
+            name(Some(r"C:\x\记事本.exe"), Some("记事本 应用")),
+            "记事本 应用"
+        );
+        // Mostly readable is readable.
+        assert_eq!(
+            name(Some(r"C:\x\a.exe"), Some("WeChat 微信")),
+            "WeChat 微信"
+        );
     }
 }
