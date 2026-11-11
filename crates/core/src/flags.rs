@@ -271,11 +271,12 @@ impl Watch {
         self.state.watched_ms += dt;
         self.state.last_at_ms = at;
 
-        self.owners = grouping
+        let owners = grouping
             .tenants
             .iter()
             .flat_map(|t| t.pids.iter().map(move |&pid| (pid, t.id.clone())))
             .collect();
+        let previous = std::mem::replace(&mut self.owners, owners);
         if let Some(pid) = snapshot.foreground_pid {
             self.focus(pid);
         }
@@ -294,17 +295,23 @@ impl Watch {
         for t in &grouping.tenants {
             let record = self.state.tenants.entry(t.id.clone()).or_default();
             record.last_seen_ms = at;
-            let restarted = record
+            // The same run as before if its oldest process is the same,
+            // or if any of its processes was its own a sample ago: the
+            // oldest of several may leave while the others stay. After a
+            // gap, process ids prove nothing and the start time decides.
+            let same_start = record
                 .live
                 .as_ref()
-                .is_none_or(|i| i.started_at_ms != t.started_at_ms);
+                .is_some_and(|i| i.started_at_ms == t.started_at_ms);
+            let survived = dt > 0
+                && record.live.is_some()
+                && t.pids.iter().any(|pid| previous.get(pid) == Some(&t.id));
+            let restarted = !(same_start || survived);
             if restarted {
-                record.live = Some(Instance {
-                    started_at_ms: t.started_at_ms,
-                    ..Instance::default()
-                });
+                record.live = Some(Instance::default());
             }
             let i = record.live.as_mut().expect("set above");
+            i.started_at_ms = t.started_at_ms;
             // Only time it was running for, seen at both ends, counts.
             let tdt = if !restarted && self.present.contains(&t.id) {
                 dt
@@ -424,6 +431,85 @@ impl Watch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::Rules;
+    use crate::snapshot::Process;
+    use crate::tenants::group;
+
+    const APP: &str = "c:\\app\\app.exe";
+
+    /// One sample with the app's processes as `(pid, started_at_ms)`.
+    fn observe(watch: &mut Watch, at_ms: u64, processes: &[(u32, u64)]) {
+        let snapshot = Snapshot {
+            at_ms,
+            capacity_bytes: 1 << 34,
+            available_bytes: 1 << 33,
+            processes: processes
+                .iter()
+                .map(|&(pid, started_at_ms)| Process {
+                    pid,
+                    parent_pid: 1,
+                    started_at_ms,
+                    session: 1,
+                    image_path: Some(APP.into()),
+                    rent_bytes: 200 * MIB,
+                    lease_bytes: 200 * MIB,
+                    has_visible_window: true,
+                    ..Process::default()
+                })
+                .collect(),
+            ..Snapshot::default()
+        };
+        let grouping = group(&snapshot, &Rules::builtin());
+        watch.observe(&snapshot, &grouping);
+    }
+
+    fn run(watch: &Watch) -> &Instance {
+        watch.record(APP).unwrap().live.as_ref().unwrap()
+    }
+
+    /// Two windows of one app are one tenant. Closing the older one must
+    /// not make the tenant a newcomer: its watched time, and with it AWAY
+    /// and LEAK, would start over.
+    #[test]
+    fn a_tenant_keeps_its_counters_when_its_oldest_process_leaves() {
+        let mut watch = Watch::new(State::default(), BTreeSet::new());
+        let t0 = 1_000_000;
+        for k in 0..5 {
+            observe(&mut watch, t0 + k * 2_000, &[(10, 100), (11, 200)]);
+        }
+        assert_eq!(run(&watch).watched_ms, 8_000);
+        assert_eq!(run(&watch).started_at_ms, 100);
+        // The older process exits; the younger stays.
+        observe(&mut watch, t0 + 10_000, &[(11, 200)]);
+        assert_eq!(run(&watch).watched_ms, 10_000, "the same run goes on");
+        assert_eq!(run(&watch).unfocused_ms, 10_000);
+        assert_eq!(run(&watch).started_at_ms, 200, "its oldest process now");
+        // A real restart: none of its processes was there a sample ago.
+        observe(&mut watch, t0 + 12_000, &[(12, t0 + 11_000)]);
+        assert_eq!(run(&watch).watched_ms, 0, "a new run starts over");
+        observe(&mut watch, t0 + 14_000, &[(12, t0 + 11_000)]);
+        assert_eq!(run(&watch).watched_ms, 2_000);
+    }
+
+    /// After a gap such as sleep, a process id may belong to anyone: only
+    /// the start time says whether the run is the same.
+    #[test]
+    fn after_a_gap_only_the_start_time_tells_a_run() {
+        let mut watch = Watch::new(State::default(), BTreeSet::new());
+        let t0 = 1_000_000;
+        observe(&mut watch, t0, &[(10, 100)]);
+        observe(&mut watch, t0 + 2_000, &[(10, 100)]);
+        assert_eq!(run(&watch).watched_ms, 2_000);
+        // An hour later the same id, started at another time: a new run.
+        let later = t0 + 3_600_000;
+        observe(&mut watch, later, &[(10, later - 5_000)]);
+        assert_eq!(run(&watch).watched_ms, 0);
+        // And across a gap with the same start time: the same run, the
+        // gap not counted.
+        observe(&mut watch, later + 2_000, &[(10, later - 5_000)]);
+        observe(&mut watch, later + 3_600_000, &[(10, later - 5_000)]);
+        assert_eq!(run(&watch).watched_ms, 2_000);
+    }
 
     #[test]
     fn rising_counts_steps_up() {

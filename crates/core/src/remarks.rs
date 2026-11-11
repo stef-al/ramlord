@@ -275,7 +275,7 @@ impl Remarks {
         let full = commit_full
             || self
                 .low_since
-                .is_some_and(|since| now - since >= FULL_AFTER_MS);
+                .is_some_and(|since| now.saturating_sub(since) >= FULL_AFTER_MS);
         let calm = vacant * 2 > capacity;
         let packed = u128::from(building.boxes_bytes) * 20 >= capacity && building.boxes_bytes > 0;
         let highlight = building
