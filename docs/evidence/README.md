@@ -27,3 +27,5 @@ Screenshots and outputs that back a milestone's "done when" boxes.
 | `m5-wine-card.png` | The PNG F2 wrote to `Pictures\RAMlord\` under Wine, 960 by 1200. The same run found it on the clipboard as an image, a second start left one window, and WM_CLOSE hid the window to the tray until a second start showed it again. |
 | `m5-custom-price.png`, `m5-card-euro.png` | A custom price of EUR 5.20 typed on the settings screen (`tests/prices_settings.rs`): every amount on screen and on the card changes to it. |
 | `m5-tray-icons.png` | The tray icon at 8 times scale: 30% occupied, and full (red). |
+| `m6-app-icon.png` | The app icon (M6): the 32 and 16 pixel drawings at 8 times, the 256 pixel image as stored, and 16 and 32 at their real size on the right. `fixtures/golden/app-icon.png` pins the 256. |
+| `m6-wine-run.png` | Rung 4 for M6: the MinGW exe with its icon and version resources linked in (`objdump -p` lists them) starts, paints and exits 0 under Wine. Xvfb has no window manager, so no title bar shows the icon. |
