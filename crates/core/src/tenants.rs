@@ -305,7 +305,10 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
         let id = if grouper.is_vm_host(root) {
             root.exe()
         } else {
-            root.image_path.as_deref().map(str::to_lowercase)
+            root.image_path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+                .map(str::to_lowercase)
         }
         .or_else(|| root.exe())
         .unwrap_or_else(|| "?".into());

@@ -269,3 +269,30 @@ fn the_tray_icon_fills_with_occupancy_and_turns_red_when_full() {
     assert_eq!(icon.pixel(0, 15), TRAY_CLEAR);
     assert_eq!((icon.width, icon.height), (16, 16));
 }
+
+/// A settings file with a price the building cannot be billed at (a
+/// hand edit, a half-written file from another version) must not stop
+/// the first frame: the price is dropped and the file's price bills.
+#[test]
+fn a_broken_price_in_the_settings_file_does_not_stop_the_app() {
+    use ramlord_core::settings::CustomPrice;
+    for (micros, as_of) in [(0, "2026-11-10"), (5_000_000, "not a date")] {
+        let settings = Settings {
+            custom_price: Some(CustomPrice {
+                per_gb_micros: micros,
+                symbol: "$".into(),
+                as_of: as_of.into(),
+            }),
+            scale: Some(77),
+            away_hours: 0,
+            ..Settings::default()
+        };
+        let (live, _) = live(Some(MemoryType::Ddr4), settings);
+        let b = live.building().unwrap();
+        b.validate().expect("billable");
+        assert_eq!(b.price.per_gb_micros, 6_530_000, "the file's DDR4 price");
+        assert_eq!(live.settings().custom_price, None);
+        assert_eq!(live.settings().scale, None);
+        assert_eq!(live.settings().away_hours, 1);
+    }
+}

@@ -161,6 +161,7 @@ impl Process {
         self.image_path
             .as_deref()
             .map(file_name)
+            .filter(|n| !n.is_empty())
             .or_else(|| self.image_name.as_deref().map(str::to_lowercase))
             .filter(|n| !n.is_empty())
     }

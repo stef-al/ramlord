@@ -84,7 +84,8 @@ impl Live {
         prices: PriceTable,
         detected: Option<MemoryType>,
     ) {
-        self.settings = settings;
+        // Whatever the file held, the building must be billable.
+        self.settings = settings.sanitized();
         self.prices = prices;
         self.detected = detected;
         self.apply_settings();

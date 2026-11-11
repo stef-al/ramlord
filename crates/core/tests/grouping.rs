@@ -598,3 +598,23 @@ fn apps_in_folders_of_any_script_become_tenants() {
     let (frame, _) = ramlord_core::render_tower(&b, &ramlord_core::HueBook::new());
     assert_eq!((frame.width, frame.height), (384, 240));
 }
+
+/// A tenant's id is never empty, whatever the snapshot holds: an empty id
+/// would make the building invalid and freeze the window.
+#[test]
+fn an_empty_image_path_still_gives_a_tenant_an_id() {
+    let mut pc = Pc::new();
+    pc.add(800, 100, Some(""), 300).has_visible_window = true;
+    let odd = pc.add(810, 100, Some(""), 200);
+    odd.has_visible_window = true;
+    odd.image_name = Some("odd.exe".into());
+    let g = group(&pc.0, &Rules::builtin());
+    let ids: Vec<&str> = g.tenants.iter().map(|t| t.id.as_str()).collect();
+    // Without a path or a name it cannot be told apart: Staff. With a
+    // name from the process list, the name is its id.
+    assert_eq!(ids, ["odd.exe"]);
+    assert_eq!(pc.role(800), Role::Staff);
+    building(&pc.0, &Rules::builtin(), &Lease::placeholder())
+        .validate()
+        .expect("valid");
+}

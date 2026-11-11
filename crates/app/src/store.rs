@@ -24,12 +24,14 @@ pub fn settings_path() -> Option<PathBuf> {
     Some(folder()?.join("settings.json"))
 }
 
-/// The settings, or the defaults if there are none or they cannot be
-/// read. Keys this version does not know are kept for the next save.
+/// The settings, or the defaults if there are none or the file is not
+/// JSON at all. A single value that does not fit costs only itself
+/// (`Settings::from_json`); keys this version does not know are kept for
+/// the next save.
 pub fn load_settings(path: &Path) -> Settings {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
+        .and_then(|text| Settings::from_json(&text))
         .unwrap_or_default()
 }
 
@@ -130,6 +132,10 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["later"], serde_json::Value::Bool(true));
         assert_eq!(load_settings(&path), settings);
+        // One value that does not fit costs only itself.
+        std::fs::write(&path, r#"{"family": ["old.exe"], "scale": "huge"}"#).unwrap();
+        let lenient = load_settings(&path);
+        assert_eq!((lenient.family.len(), lenient.scale), (1, None));
         // A broken file reads as the defaults.
         std::fs::write(&path, "[1, 2").unwrap();
         assert_eq!(load_settings(&path), Settings::default());

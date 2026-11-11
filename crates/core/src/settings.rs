@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::date::Date;
 use crate::prices::decimal_micros;
 use crate::smbios::MemoryType;
 
@@ -62,6 +63,74 @@ impl Default for Settings {
             price_checked_ms: 0,
             other: BTreeMap::new(),
         }
+    }
+}
+
+impl CustomPrice {
+    /// Whether the building can be billed at it: a positive price, a
+    /// symbol of one to three characters and a real date.
+    pub fn is_valid(&self) -> bool {
+        let symbol = self.symbol.chars().count();
+        self.per_gb_micros > 0
+            && (1..=3).contains(&symbol)
+            && !self.symbol.chars().any(char::is_whitespace)
+            && Date::parse(&self.as_of).is_some()
+    }
+}
+
+/// The scales a window can be set to.
+pub const SCALES: std::ops::RangeInclusive<u32> = 2..=5;
+/// The away threshold's limits in hours: 1 hour to 7 days.
+pub const AWAY_HOURS: std::ops::RangeInclusive<u32> = 1..=168;
+
+impl Settings {
+    /// Reads a settings file a person may have edited. A key whose value
+    /// does not fit (`"scale": "big"`) keeps its default instead of
+    /// costing every other setting; values out of range are brought back
+    /// in (`sanitized`); keys this version does not know are kept. None
+    /// only when the text is not a JSON object at all.
+    pub fn from_json(text: &str) -> Option<Settings> {
+        let serde_json::Value::Object(mut map) = serde_json::from_str(text).ok()? else {
+            return None;
+        };
+        fn take<T: serde::de::DeserializeOwned>(
+            map: &mut serde_json::Map<String, serde_json::Value>,
+            key: &str,
+            default: T,
+        ) -> T {
+            map.remove(key)
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or(default)
+        }
+        let d = Settings::default();
+        let settings = Settings {
+            scale: take(&mut map, "scale", d.scale),
+            always_on_top: take(&mut map, "always_on_top", d.always_on_top),
+            close_quits: take(&mut map, "close_quits", d.close_quits),
+            start_with_windows: take(&mut map, "start_with_windows", d.start_with_windows),
+            memory_type: take(&mut map, "memory_type", d.memory_type),
+            custom_price: take(&mut map, "custom_price", d.custom_price),
+            fetch_prices: take(&mut map, "fetch_prices", d.fetch_prices),
+            away_hours: take(&mut map, "away_hours", d.away_hours),
+            family: take(&mut map, "family", d.family),
+            anonymous: take(&mut map, "anonymous", d.anonymous),
+            price_checked_ms: take(&mut map, "price_checked_ms", d.price_checked_ms),
+            other: map.into_iter().collect(),
+        };
+        Some(settings.sanitized())
+    }
+
+    /// The settings with every value in range: a scale outside 2 to 5 is
+    /// automatic, the away threshold stays within 1 hour to 7 days, and a
+    /// custom price the building could not be billed at is dropped.
+    pub fn sanitized(mut self) -> Settings {
+        self.scale = self.scale.filter(|s| SCALES.contains(s));
+        self.away_hours = self
+            .away_hours
+            .clamp(*AWAY_HOURS.start(), *AWAY_HOURS.end());
+        self.custom_price = self.custom_price.filter(CustomPrice::is_valid);
+        self.family.remove("");
+        self
     }
 }
 
@@ -183,8 +252,8 @@ impl Settings {
         match row {
             Row::Scale => {
                 s.scale = match s.scale {
-                    None => Some(2),
-                    Some(5) => None,
+                    None => Some(*SCALES.start()),
+                    Some(n) if n >= *SCALES.end() => None,
                     Some(n) => Some(n + 1),
                 }
             }
@@ -273,6 +342,102 @@ mod tests {
             serde_json::from_str(r#"{"memory_type": "LPDDR5", "scale": 3}"#).unwrap();
         assert_eq!(typed.memory_type, Some(MemoryType::Lpddr5));
         assert_eq!(typed.scale, Some(3));
+    }
+
+    /// A person may edit settings.json. Whatever they leave there, the
+    /// app starts, keeps what is right and never bills at a broken price.
+    #[test]
+    fn a_hand_edited_file_keeps_what_fits_and_drops_the_rest() {
+        let s = Settings::from_json(
+            r#"{
+                "scale": "big",
+                "always_on_top": true,
+                "away_hours": 100000,
+                "family": ["a.exe", ""],
+                "anonymous": "yes",
+                "custom_price": {"per_gb_micros": 0, "symbol": "$", "as_of": "2026-11-10"},
+                "memory_type": "DDR9",
+                "later": {"kept": true}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(s.scale, None, "not a number: automatic");
+        assert!(s.always_on_top, "what fits is kept");
+        assert_eq!(s.away_hours, 168, "clamped to 7 days");
+        assert_eq!(s.family.len(), 1);
+        assert!(!s.anonymous);
+        assert_eq!(s.custom_price, None, "a zero price cannot bill");
+        assert_eq!(s.memory_type, None);
+        assert!(s.fetch_prices, "absent: the default");
+        assert_eq!(s.other["later"]["kept"], serde_json::Value::Bool(true));
+        // Only the wrong keys were lost; saving writes a clean file.
+        let saved = serde_json::to_string(&s).unwrap();
+        assert_eq!(Settings::from_json(&saved), Some(s));
+
+        for (file, scale, hours) in [
+            (r#"{"scale": 9, "away_hours": 0}"#, None, 1),
+            (r#"{"scale": 1}"#, None, 4),
+            (r#"{"scale": 5, "away_hours": 24}"#, Some(5), 24),
+            (r#"{"scale": null}"#, None, 4),
+            ("{}", None, 4),
+        ] {
+            let s = Settings::from_json(file).unwrap();
+            assert_eq!((s.scale, s.away_hours), (scale, hours), "{file}");
+        }
+        for not_an_object in ["", "[1, 2", "[]", "7", "null", "\"x\""] {
+            assert_eq!(Settings::from_json(not_an_object), None, "{not_an_object}");
+        }
+    }
+
+    #[test]
+    fn a_custom_price_must_be_billable() {
+        let price = |micros, symbol: &str, as_of: &str| CustomPrice {
+            per_gb_micros: micros,
+            symbol: symbol.into(),
+            as_of: as_of.into(),
+        };
+        assert!(price(5_200_000, "€", "2026-11-10").is_valid());
+        assert!(price(1, "Kč", "2026-11-10").is_valid());
+        for bad in [
+            price(0, "$", "2026-11-10"),
+            price(5, "", "2026-11-10"),
+            price(5, "EURO", "2026-11-10"),
+            price(5, "$ ", "2026-11-10"),
+            price(5, "$", "yesterday"),
+            price(5, "$", "2026-02-30"),
+        ] {
+            assert!(!bad.is_valid(), "{bad:?}");
+            let s = Settings {
+                custom_price: Some(bad),
+                ..Settings::default()
+            };
+            assert_eq!(s.sanitized().custom_price, None);
+        }
+        // Whatever a typed price parses to is billable.
+        for typed in ["€5.20", "5,2 €", "130 Kč", "12"] {
+            let parsed = parse_custom_price(typed, "$", "2026-11-10")
+                .unwrap()
+                .unwrap();
+            assert!(parsed.is_valid(), "{typed}");
+        }
+    }
+
+    #[test]
+    fn a_scale_out_of_range_still_cycles_home() {
+        let wild = Settings {
+            scale: Some(40),
+            ..Settings::default()
+        };
+        assert_eq!(wild.changed(Row::Scale).scale, None);
+        assert_eq!(
+            Settings {
+                scale: Some(u32::MAX),
+                ..Settings::default()
+            }
+            .changed(Row::Scale)
+            .scale,
+            None
+        );
     }
 
     #[test]
