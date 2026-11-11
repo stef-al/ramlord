@@ -370,6 +370,14 @@ Counters are added by their English names (`PdhAddEnglishCounterW`), so every la
 - Replies to the user, such as an eviction's report or "Rent roll saved to Pictures and copied.", take the remark line at once and stay 20 seconds.
 - Without a tray icon (no notification area), the close button quits, so RAMlord can always be reached.
 
+**Decided in M6.**
+
+- The app icon is the tower in two drawings, 16 and 32 pixels, enlarged by whole numbers to 48, 64 and 256 so the pixels stay square; 256 is stored as a PNG. `fixtures/golden/app-icon.png` pins it.
+- The exe's version block names RAMlord (FileDescription and ProductName), its version and GPL-3.0-only. Task Manager and Explorer show these.
+- The core writes the resources as bytes, and the build script links them: a `.res` file for MSVC, a COFF object for MinGW. No resource compiler and no new crate.
+- `release.yml` publishes from `main` only, when the version has no tag and is not 0.0.0. On other branches it rehearses the same build, tests, golden comparison, self-test and hash, and uploads them as an artifact, whenever `Cargo.toml`, the release files or the resources change.
+- A release has `ramlord.exe` and `ramlord.exe.sha256` (the hash, two spaces, the name: what `sha256sum -c` reads). Its notes give the hash and a PowerShell line that prints `True` when the download matches.
+
 **Remaining limits.** Windows says nothing more about SHARED, OTHER without administrator rights: shared program code and files, page tables, memory drivers lock. A process's graphics memory and its boxes are estimates, marked `~` where they are shown as amounts.
 
 ## Architecture

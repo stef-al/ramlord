@@ -54,6 +54,13 @@ of every timeline, with:
 RAMLORD_PNG_DIR=/some/dir cargo test -p ramlord-core --test flags
 ```
 
+`app-icon.png` is the app icon at 256 pixels; the icon tests write it,
+with the 16 and 32 pixel drawings enlarged:
+
+```bash
+RAMLORD_PNG_DIR=/some/dir cargo test -p ramlord-core --test app_icon
+```
+
 `details-card.png` is Discord's card on the sample building. The input
 tests write it as `details-discord.png`, with Chrome's card, every
 eviction dialog, and Chrome's card and the Staff card on the gallery
@@ -70,7 +77,8 @@ machine. `crates/app/src/win/evict.rs` only carries the commands out.
 
 SPEC.md's section "After M4: what the owner added" covers the boxes, the
 gallery (graphics memory; a process's share is its Shared Usage capped at
-its commit beyond its working set), VM hosts, holders (`layout::Holder`:
+its commit beyond its working set), VM hosts (a tenant's shared working
+set counts once: a micro-VM maps its template's pages), holders (`layout::Holder`:
 every unit, box and picture leads to a tenant, Staff or Others), the
 Staff and Others cards and the lease breakdown. The building sums Staff,
 rent, gallery, boxes and Vacant to capacity; the gallery never squeezes
@@ -183,6 +191,22 @@ Tools for rungs 3 and 4, if missing:
 rustup target add x86_64-pc-windows-gnu
 apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 wine wine64 xvfb imagemagick xdotool xclip
 ```
+
+## Releases
+
+The icon and the version block are resources the core writes as bytes
+(`ramlord_core::resources`); `crates/app/build.rs` hands MSVC's linker a
+`.res` file and MinGW's a COFF object, so no resource compiler is needed.
+`x86_64-w64-mingw32-windres -i FILE -O rc` decodes either file, and
+`x86_64-w64-mingw32-objdump -p ramlord.exe` lists the linked tree.
+`.github/scripts/exe-resources.ps1` checks the version and icon on Windows.
+
+To release, raise `version` in the root `Cargo.toml` (and `Cargo.lock`) in
+a pull request. Merging it makes `release.yml` build, test and self-test the
+exe, then publish `ramlord.exe` and `ramlord.exe.sha256` under the new tag
+`v<version>`. On other branches it rehearses the same steps without
+publishing, when `Cargo.toml`, the release files or the resources change.
+A failed release is retried with the workflow's Run button on `main`.
 
 ## CI
 

@@ -79,6 +79,12 @@ jobs:
       - name: cargo test
         run: .github/scripts/step.sh cargo test --workspace --locked
 
+      - name: The exe's icon and version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          ./.github/scripts/exe-resources.ps1 target/release/ramlord.exe $version
+
       - name: Render the sample building with the release exe
         run: |
           mkdir -p out

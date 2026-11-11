@@ -1,0 +1,146 @@
+name: release
+
+# Releases need no tag push (SPEC.md, CI and releases). When a push to main
+# carries a `version` in Cargo.toml that has no tag yet, which is what
+# merging a pull request that raises it does, this workflow builds
+# ramlord.exe from that commit, checks it, and publishes it with its
+# SHA-256 on the Releases page, creating the tag `v<version>`.
+#
+# On any other branch it rehearses: the same build, checks and hash,
+# uploaded as an artifact, and nothing published. It runs when the version
+# or the release itself changes; run it by hand to retry a release.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - Cargo.toml
+      - .github/workflows/release.yml
+      - .github/scripts/exe-resources.ps1
+      - crates/app/build.rs
+      - crates/core/src/resources.rs
+  workflow_dispatch:
+
+# One release at a time; never cancel one halfway.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  release:
+    name: release (build, check, publish from main)
+    runs-on: windows-latest
+    permissions:
+      contents: write # create the tag and the release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Version, and whether to publish it
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            exists=true
+          else
+            exists=false
+          fi
+          publish=false
+          if [ "$GITHUB_REF" = refs/heads/main ] && [ "$exists" = false ] && [ "$version" != 0.0.0 ]; then
+            publish=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Release::version $version, tag $tag exists: $exists, publish: $publish (ref $GITHUB_REF)"
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      # No cache: a release is built from scratch.
+      - name: cargo build --release
+        run: .github/scripts/step.sh cargo build --release --locked
+
+      - name: cargo test
+        run: .github/scripts/step.sh cargo test --workspace --locked
+
+      - name: The exe's icon and version
+        shell: pwsh
+        run: ./.github/scripts/exe-resources.ps1 target/release/ramlord.exe ${{ steps.version.outputs.version }}
+
+      - name: Same pixels as Linux
+        run: |
+          mkdir -p out
+          .github/scripts/step.sh target/release/ramlord.exe --building fixtures/sample-building.json \
+            --render out/sample-tower.png --card out/sample-rent-roll.png
+          .github/scripts/step.sh cmp out/sample-tower.png fixtures/golden/sample-tower.png
+          .github/scripts/step.sh cmp out/sample-rent-roll.png fixtures/golden/sample-rent-roll.png
+
+      - name: Self-test (budgets)
+        run: .github/scripts/step.sh bash -c 'target/release/ramlord.exe --self-test out/self-test.json; code=$?; cat out/self-test.json; exit $code'
+
+      - name: SHA-256 and release notes
+        id: hash
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item target/release/ramlord.exe release/ramlord.exe
+          $hash = (Get-FileHash release/ramlord.exe -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item release/ramlord.exe).Length
+          # The format sha256sum -c reads: the hash, two spaces, the name.
+          Set-Content -Path release/ramlord.exe.sha256 -Value "$hash  ramlord.exe" -NoNewline -Encoding ascii
+          $version = "${{ steps.version.outputs.version }}"
+          $run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $notes = @"
+          RAMlord $version for 64-bit Windows 10 and 11. One file, no installer: download ``ramlord.exe`` and run it. It needs no administrator rights and sends nothing anywhere except one request a day for the price file.
+
+          **SHA-256** of ``ramlord.exe`` ($size bytes):
+
+          ``````
+          $hash
+          ``````
+
+          Check your download in PowerShell before you run it. In the folder with ``ramlord.exe``, this must print ``True``:
+
+          ``````powershell
+          (Get-FileHash .\ramlord.exe -Algorithm SHA256).Hash -eq "$hash"
+          ``````
+
+          Windows will warn about an unknown publisher: the exe is not signed yet. It was built by GitHub Actions from commit $env:GITHUB_SHA, in [this run]($run), where its tests, golden images and budgets passed. See the README for what RAMlord reads and what it never does.
+          "@
+          Set-Content -Path release/notes.md -Value $notes -Encoding utf8
+          "hash=$hash" >> $env:GITHUB_OUTPUT
+          Write-Output "::notice title=SHA-256::ramlord.exe $version, $size bytes: $hash"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ramlord-${{ steps.version.outputs.version }}
+          path: |
+            release/ramlord.exe
+            release/ramlord.exe.sha256
+            release/notes.md
+            out/*.json
+          if-no-files-found: error
+
+      - name: Publish on the Releases page
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .github/scripts/step.sh gh release create "${{ steps.version.outputs.tag }}" \
+            release/ramlord.exe release/ramlord.exe.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "RAMlord ${{ steps.version.outputs.version }}" \
+            --notes-file release/notes.md
+          echo "::notice title=Published::$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/${{ steps.version.outputs.tag }}"
