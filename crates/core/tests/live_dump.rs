@@ -236,6 +236,24 @@ fn a_live_dump_groups_into_staff_tenants_and_vacant_that_sum_to_capacity() {
         );
     }
 
+    if !snapshot.pool_drivers.is_empty() {
+        let rows: Vec<String> = snapshot
+            .pool_drivers
+            .iter()
+            .take(12)
+            .map(|d| {
+                format!(
+                    "{} paged {} + nonpaged {} MiB in {} tags",
+                    d.driver,
+                    d.paged_bytes / MIB,
+                    d.nonpaged_bytes / MIB,
+                    d.tags
+                )
+            })
+            .collect();
+        println!("::notice title=Kernel pools by driver::{}", rows.join("; "));
+    }
+
     // VM hosts: what each holds, and how much of it other processes map
     // too (SPEC.md, VM hosts: a micro-VM's template counts once).
     let rules = Rules::builtin();

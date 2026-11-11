@@ -70,6 +70,24 @@ pub struct Snapshot {
     /// Only `--dump` reads them; empty otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pool_tags: Vec<PoolTag>,
+    /// Every pool tag's bytes summed by the one loaded driver whose file
+    /// contains it (`pools::by_driver`), largest first. `--dump` only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pool_drivers: Vec<PoolDriver>,
+}
+
+/// Kernel pool memory summed over the tags only one loaded driver's file
+/// contains, or over tags in several files or none (`pools::SEVERAL`,
+/// `pools::NONE`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PoolDriver {
+    /// The driver's file name, such as `fltmgr.sys`.
+    pub driver: String,
+    pub paged_bytes: u64,
+    pub nonpaged_bytes: u64,
+    /// How many tags were summed.
+    pub tags: u32,
 }
 
 /// Kernel pool memory under one tag: the four characters a driver labels

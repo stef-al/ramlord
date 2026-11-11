@@ -13,7 +13,7 @@ use std::ffi::c_void;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ramlord_core::pools;
-use ramlord_core::snapshot::{PoolTag, Process, Snapshot};
+use ramlord_core::snapshot::{PoolDriver, PoolTag, Process, Snapshot};
 use windows::Wdk::System::SystemInformation::{
     NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS, SystemProcessInformation,
 };
@@ -323,17 +323,18 @@ fn system_information(class: i32) -> Option<Vec<u8>> {
     None
 }
 
-/// The `n` kernel pool tags holding the most, each with the loaded kernel
-/// modules whose files contain it (SPEC.md, After M4: pool tags). For
+/// The kernel pools (SPEC.md, After M4: pool tags): the `n` tags holding
+/// the most, each with the loaded kernel modules whose files contain it,
+/// and every tag's bytes summed by the one module that contains it. For
 /// `--dump` only: it reads every loaded driver's file. Empty when Windows
 /// does not answer.
-pub fn pool_tags(n: usize) -> Vec<PoolTag> {
+pub fn kernel_pools(n: usize) -> (Vec<PoolTag>, Vec<PoolDriver>) {
     const SYSTEM_MODULE_INFORMATION: i32 = 11;
     const SYSTEM_POOL_TAG_INFORMATION: i32 = 22;
     let Some(raw) = system_information(SYSTEM_POOL_TAG_INFORMATION) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    let mut top = pools::largest(pools::parse_tags(&raw), n);
+    let mut all = pools::parse_tags(&raw);
     let windows_dir = std::env::var("SystemRoot")
         .or_else(|_| std::env::var("windir"))
         .unwrap_or_else(|_| "C:\\Windows".into());
@@ -344,10 +345,15 @@ pub fn pool_tags(n: usize) -> Vec<PoolTag> {
     for module in modules {
         let file = pools::module_file(&module, &windows_dir);
         if let Ok(bytes) = std::fs::read(&file) {
-            pools::attribute(&mut top, &[(pools::file_name(&file), bytes)]);
+            pools::attribute(&mut all, &[(pools::file_name(&file), bytes)]);
         }
     }
-    top.into_iter().map(|(_, tag)| tag).collect()
+    let drivers = pools::by_driver(&all);
+    let top = pools::largest(all, n)
+        .into_iter()
+        .map(|(_, tag)| tag)
+        .collect();
+    (top, drivers)
 }
 
 /// Every process, from one NtQuerySystemInformation call.
@@ -722,8 +728,9 @@ impl Provider {
             standby_bytes: memory.standby,
             free_bytes: memory.free,
             gpu_shared_bytes: self.gpu.adapters_shared,
-            // Read by `--dump` alone (`pool_tags`): it reads driver files.
+            // Read by `--dump` alone (`kernel_pools`): it reads driver files.
             pool_tags: Vec::new(),
+            pool_drivers: Vec::new(),
         })
     }
 }

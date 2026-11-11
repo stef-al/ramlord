@@ -8,7 +8,7 @@
 //! Pure: these functions read the bytes Windows returns and the bytes of
 //! driver files; the Windows layer makes the calls and reads the files.
 
-use crate::snapshot::PoolTag;
+use crate::snapshot::{PoolDriver, PoolTag};
 
 /// One SYSTEM_POOLTAG on x64: tag, paged allocs and frees, padding, paged
 /// bytes, nonpaged allocs and frees, nonpaged bytes.
@@ -131,21 +131,28 @@ pub fn file_name(path: &str) -> String {
     crate::snapshot::file_name(path)
 }
 
-/// Which of `tags` appear anywhere in `file`'s bytes.
+/// Which of `tags` appear anywhere in `file`'s bytes. Fast for thousands
+/// of tags: a table of every tag's first two bytes passes over most of the
+/// file, and the rest is a binary search.
 pub fn tags_in(file: &[u8], tags: &[[u8; 4]]) -> Vec<bool> {
-    let mut first = [false; 256];
-    for tag in tags {
-        first[usize::from(tag[0])] = true;
+    let mut sorted: Vec<([u8; 4], usize)> = tags.iter().copied().zip(0..).collect();
+    sorted.sort();
+    let mut pairs = vec![false; 1 << 16];
+    for (tag, _) in &sorted {
+        pairs[usize::from(tag[0]) << 8 | usize::from(tag[1])] = true;
     }
     let mut found = vec![false; tags.len()];
     for window in file.windows(4) {
-        if !first[usize::from(window[0])] {
+        if !pairs[usize::from(window[0]) << 8 | usize::from(window[1])] {
             continue;
         }
-        for (k, tag) in tags.iter().enumerate() {
-            if window == tag {
-                found[k] = true;
+        let key = [window[0], window[1], window[2], window[3]];
+        let first = sorted.partition_point(|(tag, _)| *tag < key);
+        for (tag, k) in &sorted[first..] {
+            if *tag != key {
+                break;
             }
+            found[*k] = true;
         }
     }
     found
@@ -168,6 +175,45 @@ pub fn attribute(tags: &mut [([u8; 4], PoolTag)], files: &[(String, Vec<u8>)]) {
             }
         }
     }
+}
+
+/// Where a tag found in several loaded files is counted in `by_driver`.
+pub const SEVERAL: &str = "(several files)";
+/// Where a tag found in no loaded file is counted in `by_driver`.
+pub const NONE: &str = "(no loaded file)";
+
+/// Every attributed tag's bytes summed by driver: a tag found in exactly
+/// one loaded file counts for that file, the rest for `SEVERAL` or `NONE`.
+/// Largest first, ties by name.
+pub fn by_driver(tags: &[([u8; 4], PoolTag)]) -> Vec<PoolDriver> {
+    let mut drivers: Vec<PoolDriver> = Vec::new();
+    for (_, tag) in tags {
+        let name = match tag.found_in {
+            0 => NONE,
+            1 => tag.drivers[0].as_str(),
+            _ => SEVERAL,
+        };
+        let at = match drivers.iter().position(|d| d.driver == name) {
+            Some(at) => at,
+            None => {
+                drivers.push(PoolDriver {
+                    driver: name.to_string(),
+                    ..PoolDriver::default()
+                });
+                drivers.len() - 1
+            }
+        };
+        let d = &mut drivers[at];
+        d.paged_bytes += tag.paged_bytes;
+        d.nonpaged_bytes += tag.nonpaged_bytes;
+        d.tags += 1;
+    }
+    drivers.sort_by(|a, b| {
+        (b.paged_bytes + b.nonpaged_bytes)
+            .cmp(&(a.paged_bytes + a.nonpaged_bytes))
+            .then_with(|| a.driver.cmp(&b.driver))
+    });
+    drivers
 }
 
 #[cfg(test)]
@@ -298,6 +344,60 @@ mod tests {
         attribute(&mut tags, &many);
         let z = by(&tags, "Zzzz");
         assert_eq!((z.drivers.len(), z.found_in), (DRIVERS_KEPT, 8));
+    }
+
+    #[test]
+    fn every_tag_is_summed_by_the_one_driver_that_has_it() {
+        let raw = tags_buffer(&[
+            (b"#SAC", 0, 87),
+            (b"#PAE", 0, 79),
+            (b"FMfn", 174, 0),
+            (b"File", 0, 66),
+            (b"Gone", 3, 4),
+        ]);
+        let mut tags = parse_tags(&raw);
+        let files = vec![
+            ("ntoskrnl.exe".to_string(), b"File".to_vec()),
+            ("atc.sys".to_string(), b"#SAC #PAE File".to_vec()),
+            ("fltmgr.sys".to_string(), b"FMfn".to_vec()),
+        ];
+        attribute(&mut tags, &files);
+        let drivers = by_driver(&tags);
+        let rows: Vec<(&str, u64, u64, u32)> = drivers
+            .iter()
+            .map(|d| (d.driver.as_str(), d.paged_bytes, d.nonpaged_bytes, d.tags))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("fltmgr.sys", 174, 0, 1),
+                ("atc.sys", 0, 166, 2),
+                (SEVERAL, 0, 66, 1),
+                (NONE, 3, 4, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn thousands_of_tags_are_searched_in_one_pass() {
+        let tags: Vec<[u8; 4]> = (0..3000u32)
+            .map(|k| {
+                [
+                    b'A' + (k % 26) as u8,
+                    b'a' + (k / 26 % 26) as u8,
+                    b'0' + (k / 676) as u8,
+                    b' ',
+                ]
+            })
+            .collect();
+        let mut file = vec![0u8; 100_000];
+        file[500..504].copy_from_slice(&tags[1234]);
+        file[99_996..].copy_from_slice(&tags[2999]);
+        let found = tags_in(&file, &tags);
+        let hits: Vec<usize> = (0..tags.len()).filter(|&k| found[k]).collect();
+        assert_eq!(hits, [1234, 2999]);
+        // The same tag twice in the list is found twice.
+        assert_eq!(tags_in(b"xMmSt", &[*b"MmSt", *b"MmSt"]), [true, true]);
     }
 
     #[test]

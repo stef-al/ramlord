@@ -179,7 +179,7 @@ fn dump(out: &Path) -> ExitCode {
         }
     }
     // Which drivers hold the kernel's pools (SPEC.md, After M4).
-    snapshot.pool_tags = win::provider::pool_tags(25);
+    (snapshot.pool_tags, snapshot.pool_drivers) = win::provider::kernel_pools(25);
     if let Some(profile) = std::env::var_os("USERPROFILE") {
         snapshot.hide_profile(&profile.to_string_lossy());
     }
