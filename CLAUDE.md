@@ -83,7 +83,10 @@ every unit, box and picture leads to a tenant, Staff or Others), the
 Staff and Others cards and the lease breakdown. The building sums Staff,
 rent, gallery, boxes and Vacant to capacity; the gallery never squeezes
 Vacant. `crates/app/src/win/counters.rs` reads the performance counters
-through pdh.dll by their English names.
+through pdh.dll by their English names. `--dump` also lists the largest
+kernel pool tags with the loaded drivers whose files contain them
+(`ramlord_core::pools`), and how much of each VM host's working set other
+processes map; the live dump check prints both.
 
 Timelines (`fixtures/timelines/*.json`, format in
 `crates/core/tests/timeline/mod.rs`) describe hours of samples, sleeps and

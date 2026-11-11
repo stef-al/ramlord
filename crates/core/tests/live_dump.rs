@@ -192,6 +192,50 @@ fn a_live_dump_groups_into_staff_tenants_and_vacant_that_sum_to_capacity() {
         }
     );
 
+    // Kernel pools by tag, and the drivers whose files contain each tag.
+    if !snapshot.pool_tags.is_empty() {
+        let total = |t: &ramlord_core::snapshot::PoolTag| t.paged_bytes + t.nonpaged_bytes;
+        assert!(
+            snapshot
+                .pool_tags
+                .windows(2)
+                .all(|w| total(&w[0]) >= total(&w[1])),
+            "pool tags largest first"
+        );
+        let paged: u64 = snapshot.pool_tags.iter().map(|t| t.paged_bytes).sum();
+        let nonpaged: u64 = snapshot.pool_tags.iter().map(|t| t.nonpaged_bytes).sum();
+        let rows: Vec<String> = snapshot
+            .pool_tags
+            .iter()
+            .take(15)
+            .map(|t| {
+                let owners = match t.found_in as usize {
+                    0 => " (no loaded driver)".to_string(),
+                    n if n > t.drivers.len() => {
+                        format!(" ({} +{})", t.drivers.join(", "), n - t.drivers.len())
+                    }
+                    _ => format!(" ({})", t.drivers.join(", ")),
+                };
+                format!(
+                    "'{}' paged {} + nonpaged {} MiB{owners}",
+                    t.tag,
+                    t.paged_bytes / MIB,
+                    t.nonpaged_bytes / MIB
+                )
+            })
+            .collect();
+        println!(
+            "::notice title=Kernel pools by tag::the top {} tags hold paged {} of {} MiB and \
+             nonpaged {} of {} MiB. {}",
+            snapshot.pool_tags.len(),
+            paged / MIB,
+            snapshot.kernel_paged_bytes / MIB,
+            nonpaged / MIB,
+            snapshot.kernel_nonpaged_bytes / MIB,
+            rows.join("; ")
+        );
+    }
+
     // VM hosts: what each holds, and how much of it other processes map
     // too (SPEC.md, VM hosts: a micro-VM's template counts once).
     let rules = Rules::builtin();

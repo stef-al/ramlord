@@ -333,6 +333,7 @@ The owner asked for these after M4, from dumps of a 16 GB laptop whose Staff loo
 | Compressed memory | The working set of the Memory Compression process | The boxes |
 | Graphics memory | Performance counters `GPU Adapter Memory(*)\Shared Usage` (all adapters) and `GPU Process Memory(*)\Shared Usage` per process | The gallery |
 | Staff's parts | Performance counters of the Memory object: Pool Paged Resident, System Cache Resident, System Driver Resident, System Code Resident, Modified Page List, the Standby Cache lists and Free & Zero Page List; `KernelNonpaged` from `GetPerformanceInfo` | The Staff card |
+| Kernel pools by tag | `NtQuerySystemInformation(SystemPoolTagInformation)`: paged and nonpaged bytes under each driver's four-character tag; `SystemModuleInformation` for the loaded drivers, whose files are searched for each of the largest tags | `--dump` only: which driver holds the kernel pools |
 
 Counters are added by their English names (`PdhAddEnglishCounterW`), so every language of Windows answers. The memory counters are read at every sample, graphics memory every 5 seconds. A counter that is missing reads as 0. They are part of the snapshot contract and of `--dump`.
 

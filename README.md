@@ -99,8 +99,10 @@ and LEAK an app whose memory keeps growing.
 
 `ramlord --dump my-pc.json` writes what RAMlord sees: process names, memory
 numbers and program paths, with your profile folder replaced by
-`%USERPROFILE%`, and no window titles, command lines or user names. Read it
-before you share it. `ramlord --self-test report.json` checks RAMlord's own
+`%USERPROFILE%`, and no window titles, command lines or user names. It also
+lists the kernel memory pool tags holding the most and which loaded drivers
+contain each tag, to find a driver that hoards memory. Read it before you
+share it. `ramlord --self-test report.json` checks RAMlord's own
 budgets: under 40 MB of memory, under 1% CPU.
 
 ## Build

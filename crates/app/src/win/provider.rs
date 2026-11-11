@@ -12,8 +12,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::ffi::c_void;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ramlord_core::snapshot::{Process, Snapshot};
-use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SystemProcessInformation};
+use ramlord_core::pools;
+use ramlord_core::snapshot::{PoolTag, Process, Snapshot};
+use windows::Wdk::System::SystemInformation::{
+    NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS, SystemProcessInformation,
+};
 use windows::Win32::Foundation::{
     CloseHandle, FILETIME, HANDLE, HWND, LPARAM, RECT, STATUS_INFO_LENGTH_MISMATCH, TRUE,
 };
@@ -278,6 +281,73 @@ fn listed_name(info: &SYSTEM_PROCESS_INFORMATION, list: &[u64]) -> String {
     // SAFETY: the name's `bytes` lie inside `list`, checked above, and are
     // aligned UTF-16.
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(name.Buffer.0, bytes / 2) })
+}
+
+/// One NtQuerySystemInformation class as bytes, the buffer grown as the
+/// call asks. None when the call fails or Windows does not offer the class.
+fn system_information(class: i32) -> Option<Vec<u8>> {
+    // u64 words keep the entries 8-byte aligned.
+    let mut words: Vec<u64> = vec![0; 16 * 1024];
+    for _ in 0..8 {
+        let bytes = u32::try_from(words.len() * 8).unwrap_or(u32::MAX);
+        let mut needed = 0u32;
+        // SAFETY: the buffer holds `bytes` bytes, as the call is told.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_INFORMATION_CLASS(class),
+                words.as_mut_ptr().cast(),
+                bytes,
+                &mut needed,
+            )
+        };
+        if status == STATUS_INFO_LENGTH_MISMATCH {
+            let want = (needed as usize).max(words.len() * 16);
+            words.resize(want.div_ceil(8), 0);
+            continue;
+        }
+        if status.0 < 0 {
+            return None;
+        }
+        let len = match needed as usize {
+            0 => words.len() * 8,
+            n => n.min(words.len() * 8),
+        };
+        return Some(
+            words
+                .iter()
+                .flat_map(|w| w.to_le_bytes())
+                .take(len)
+                .collect(),
+        );
+    }
+    None
+}
+
+/// The `n` kernel pool tags holding the most, each with the loaded kernel
+/// modules whose files contain it (SPEC.md, After M4: pool tags). For
+/// `--dump` only: it reads every loaded driver's file. Empty when Windows
+/// does not answer.
+pub fn pool_tags(n: usize) -> Vec<PoolTag> {
+    const SYSTEM_MODULE_INFORMATION: i32 = 11;
+    const SYSTEM_POOL_TAG_INFORMATION: i32 = 22;
+    let Some(raw) = system_information(SYSTEM_POOL_TAG_INFORMATION) else {
+        return Vec::new();
+    };
+    let mut top = pools::largest(pools::parse_tags(&raw), n);
+    let windows_dir = std::env::var("SystemRoot")
+        .or_else(|_| std::env::var("windir"))
+        .unwrap_or_else(|_| "C:\\Windows".into());
+    let modules = system_information(SYSTEM_MODULE_INFORMATION)
+        .map(|raw| pools::parse_modules(&raw))
+        .unwrap_or_default();
+    // One file at a time, so at most one driver is in memory.
+    for module in modules {
+        let file = pools::module_file(&module, &windows_dir);
+        if let Ok(bytes) = std::fs::read(&file) {
+            pools::attribute(&mut top, &[(pools::file_name(&file), bytes)]);
+        }
+    }
+    top.into_iter().map(|(_, tag)| tag).collect()
 }
 
 /// Every process, from one NtQuerySystemInformation call.
@@ -652,6 +722,8 @@ impl Provider {
             standby_bytes: memory.standby,
             free_bytes: memory.free,
             gpu_shared_bytes: self.gpu.adapters_shared,
+            // Read by `--dump` alone (`pool_tags`): it reads driver files.
+            pool_tags: Vec::new(),
         })
     }
 }

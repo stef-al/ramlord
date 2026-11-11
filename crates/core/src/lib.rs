@@ -24,6 +24,7 @@ pub mod format;
 pub mod layout;
 pub mod live;
 pub mod palette;
+pub mod pools;
 pub mod prices;
 pub mod remarks;
 pub mod render;

@@ -66,6 +66,30 @@ pub struct Snapshot {
     /// set. 0 when unknown.
     #[serde(default)]
     pub gpu_shared_bytes: u64,
+    /// The kernel pool tags holding the most, largest first (`pools`).
+    /// Only `--dump` reads them; empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pool_tags: Vec<PoolTag>,
+}
+
+/// Kernel pool memory under one tag: the four characters a driver labels
+/// its allocations with. For diagnosis: which driver holds Staff's pools.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PoolTag {
+    /// The tag, with bytes that are not printable written as `\xNN`.
+    pub tag: String,
+    /// Paged pool under this tag, in RAM or in the page file.
+    pub paged_bytes: u64,
+    /// Nonpaged pool under this tag: always in RAM.
+    pub nonpaged_bytes: u64,
+    /// Loaded kernel modules whose files contain the tag, in load order,
+    /// at most `pools::DRIVERS_KEPT`: the likely owners.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drivers: Vec<String>,
+    /// How many loaded modules' files contain the tag.
+    #[serde(default)]
+    pub found_in: u32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
