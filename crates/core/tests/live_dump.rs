@@ -192,6 +192,32 @@ fn a_live_dump_groups_into_staff_tenants_and_vacant_that_sum_to_capacity() {
         }
     );
 
+    // VM hosts: what each holds, and how much of it other processes map
+    // too (SPEC.md, VM hosts: a micro-VM's template counts once).
+    let rules = Rules::builtin();
+    let hosts: Vec<String> = snapshot
+        .processes
+        .iter()
+        .filter(|p| p.exe().is_some_and(|n| rules.is_vm_host(&n)))
+        .map(|p| {
+            format!(
+                "{} pid {} session {}: in RAM {} MiB, private {} MiB, commit {} MiB, shared with \
+                 others {}",
+                p.exe().unwrap_or_default(),
+                p.pid,
+                p.session,
+                p.working_set_bytes / MIB,
+                p.rent_bytes / MIB,
+                p.lease_bytes / MIB,
+                p.ws_shared_with_others_bytes
+                    .map_or("not read".to_string(), |b| format!("{} MiB", b / MIB)),
+            )
+        })
+        .collect();
+    if !hosts.is_empty() {
+        println!("::notice title=VM hosts::{}", hosts.join("; "));
+    }
+
     let mut largest: Vec<_> = grouping.tenants.iter().collect();
     largest.sort_by_key(|t| std::cmp::Reverse(t.rent_bytes));
     let top: Vec<String> = largest

@@ -446,10 +446,10 @@ fn a_process_that_cannot_be_opened_is_staff_though_named() {
 
 /// From the owner's third dump: Sure Click's manager in session 0 (not
 /// opened, 1,187 MiB in RAM, 7 MiB committed) and a micro-VM in the user's
-/// session (opened, under BrHostSvr) are one tenant, and its lease is never
-/// less than its rent.
+/// session (opened, under BrHostSvr) are one tenant, which counts the
+/// template's memory once.
 #[test]
-fn sure_click_is_one_tenant_and_leases_what_it_holds() {
+fn sure_click_is_one_tenant_and_counts_its_template_once() {
     let mut pc = Pc::new();
     pc.add(6760, 50, None, 20).image_name = Some("BrService.exe".into());
     pc.0.processes.last_mut().unwrap().session = 0;
@@ -482,10 +482,37 @@ fn sure_click_is_one_tenant_and_leases_what_it_holds() {
     assert_eq!(sure_click.len(), 1, "one Sure Click");
     let t = sure_click[0];
     assert_eq!(t.process_count, 3);
-    assert_eq!(t.rent_bytes, (1187 + 54 + 1398) * MIB);
+    // The micro-VM maps the template's memory copy-on-write: its 1,043 MiB
+    // shared working set are pages the manager's 1,187 MiB already hold.
+    // Private memory, plus the largest shared working set once.
+    assert_eq!(t.rent_bytes, (54 + 355 + 1187) * MIB);
+    // The commits summed, which here exceed what it holds.
+    assert_eq!(t.lease_bytes, (7 + 65 + 1656) * MIB);
     assert!(t.lease_bytes >= t.rent_bytes);
-    // The manager leases what it holds; the rest their commit.
-    assert_eq!(t.lease_bytes, (1187 + 65 + 1656) * MIB);
+    // Commit beyond what each process holds: the micro-VM's.
+    assert_eq!(t.packed_bytes, (65 - 54 + 1656 - 1398) * MIB);
+}
+
+/// A VM host's lease is at least what it holds, even when Windows charges
+/// none of the guest's memory to its commit.
+#[test]
+fn a_vm_host_leases_at_least_what_it_holds() {
+    let mut pc = Pc::new();
+    pc.add(1400, 50, None, 17).image_name = Some("BrService.exe".into());
+    pc.0.processes.last_mut().unwrap().session = 0;
+    for pid in [1410, 1420] {
+        let vm = pc.add(pid, 1400, None, 100);
+        vm.session = 0;
+        vm.image_name = Some("Br-uxendm.exe".into());
+        vm.working_set_bytes = if pid == 1410 { 900 } else { 600 } * MIB;
+        vm.lease_bytes = 7 * MIB;
+    }
+    let g = group(&pc.0, &Rules::builtin());
+    let t = g.tenant_of(1410).unwrap();
+    assert_eq!(t.process_count, 2);
+    assert_eq!(t.rent_bytes, (100 + 100 + 800) * MIB);
+    assert_eq!(t.lease_bytes, t.rent_bytes);
+    assert_eq!(t.packed_bytes, 0);
 }
 
 /// From the owner's PC: HP Sure Click's micro-VM manager runs in session 0

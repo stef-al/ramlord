@@ -16,9 +16,12 @@
 //!
 //! Two additions the owner asked for: a virtual machine host (`vm_hosts`,
 //! such as `vmmem`) is a tenant of its own even in session 0, since its
-//! memory is a guest's, and its rent is its whole working set, since a
-//! guest's memory is mapped rather than private (HP Sure Click's micro-VMs
-//! hold over a gigabyte with no private memory at all); and the Memory
+//! memory is a guest's, and its rent counts its shared working set too,
+//! since a guest's memory is mapped rather than private (HP Sure Click's
+//! micro-VM manager holds over a gigabyte with no private memory at all).
+//! A micro-VM maps its template's memory copy-on-write, so the same pages
+//! sit in two processes' working sets: the shared part counts once per
+//! tenant, the largest standing for all. And the Memory
 //! Compression process (`compression`)
 //! holds tenants' pages compressed, which the tower shows as boxes in the
 //! basement rather than as Staff.
@@ -262,6 +265,9 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
     }
 
     let mut tenants: BTreeMap<String, TenantSample> = BTreeMap::new();
+    // Per tenant with VM host processes: the largest shared working set
+    // among them.
+    let mut guests: BTreeMap<String, u64> = BTreeMap::new();
     for &pid in &pids {
         let Role::Root(root) = grouper.roles[&pid] else {
             continue;
@@ -291,21 +297,22 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
             started_at_ms: 0,
             has_window: false,
         });
-        // A guest's memory is mapped into its host, not private to it, and
-        // Windows does not charge it to the host's commit: a VM host's rent
-        // is its working set, and its lease at least that.
-        let (rent, lease) = if grouper.is_vm_host(p) {
-            let rent = p.rent_bytes.max(p.working_set_bytes);
-            (rent, p.lease_bytes.max(rent))
-        } else {
-            (p.rent_bytes, p.lease_bytes)
-        };
-        tenant.rent_bytes += rent;
-        tenant.lease_bytes += lease;
+        tenant.rent_bytes += p.rent_bytes;
+        tenant.lease_bytes += p.lease_bytes;
         tenant.process_count += 1;
         tenant.pids.push(pid);
         let gpu = gpu_owned(p);
-        tenant.packed_bytes += lease.saturating_sub(rent).saturating_sub(gpu);
+        // A guest's memory is mapped into its host, not private to it: a VM
+        // host holds its whole working set, and its shared part is added
+        // once per tenant below.
+        let held = if grouper.is_vm_host(p) {
+            let shared = guests.entry(tenant.id.clone()).or_default();
+            *shared = (*shared).max(p.working_set_bytes.saturating_sub(p.rent_bytes));
+            p.rent_bytes.max(p.working_set_bytes)
+        } else {
+            p.rent_bytes
+        };
+        tenant.packed_bytes += p.lease_bytes.saturating_sub(held).saturating_sub(gpu);
         tenant.gpu_bytes += gpu;
         tenant.has_window |= p.has_visible_window;
         if p.started_at_ms > 0
@@ -313,6 +320,13 @@ pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
         {
             tenant.started_at_ms = p.started_at_ms;
         }
+    }
+    // Windows does not charge a guest's memory to its host's commit, so a
+    // VM host's lease is at least what it holds.
+    for (id, shared) in guests {
+        let tenant = tenants.get_mut(&id).expect("a guest's tenant");
+        tenant.rent_bytes += shared;
+        tenant.lease_bytes = tenant.lease_bytes.max(tenant.rent_bytes);
     }
     let own_bytes = snapshot
         .processes

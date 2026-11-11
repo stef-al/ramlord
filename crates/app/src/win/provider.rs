@@ -26,12 +26,13 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::ProcessStatus::{
     GetPerformanceInfo, GetProcessMemoryInfo, PERFORMANCE_INFORMATION, PROCESS_MEMORY_COUNTERS,
-    PROCESS_MEMORY_COUNTERS_EX2,
+    PROCESS_MEMORY_COUNTERS_EX2, QueryWorkingSet,
 };
 use windows::Win32::System::SystemInformation::GetPhysicallyInstalledSystemMemory;
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_VM_READ, QueryFullProcessImageNameW,
 };
 use windows::Win32::System::WindowsProgramming::SYSTEM_PROCESS_INFORMATION;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -126,6 +127,45 @@ pub fn own_private_bytes() -> u64 {
         Some(c) => c.private_ws.filter(|&p| p > 0).unwrap_or(c.ws),
         None => 0,
     }
+}
+
+/// Bytes of `pid`'s working set that other processes map too: the entries
+/// `QueryWorkingSet` marks shared with a share count of 2 or more. None
+/// when the process cannot be read. For `--dump` only: it reads every page
+/// entry, which is too slow for every sample.
+pub fn ws_shared_with_others(pid: u32) -> Option<u64> {
+    const PAGE: u64 = 4096;
+    // SAFETY: OpenProcess either fails or returns a handle we own.
+    let handle = Handle(
+        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) }.ok()?,
+    );
+    // PSAPI_WORKING_SET_INFORMATION: an entry count, then one word per page.
+    let mut words = vec![0usize; 4096];
+    for _ in 0..4 {
+        // SAFETY: the buffer's size in bytes is passed with it.
+        let read = unsafe {
+            QueryWorkingSet(
+                handle.0,
+                words.as_mut_ptr().cast(),
+                (words.len() * size_of::<usize>()) as u32,
+            )
+        };
+        let entries = words[0];
+        if read.is_ok() && entries < words.len() {
+            let shared = words[1..=entries]
+                .iter()
+                .filter(|&&w| (w >> 8) & 1 == 1 && (w >> 5) & 7 >= 2)
+                .count() as u64;
+            return Some(shared * PAGE);
+        }
+        // Too small (ERROR_BAD_LENGTH): the count says how many entries
+        // there are now; leave room for growth.
+        if entries == 0 {
+            return None;
+        }
+        words = vec![0usize; entries + entries / 8 + 1024];
+    }
+    None
 }
 
 /// What the provider learns from one opened process.
@@ -561,6 +601,7 @@ impl Provider {
                 gpu_dedicated_bytes: self.gpu.dedicated.get(&e.pid).copied().unwrap_or(0),
                 has_visible_window: visible.contains(&e.pid),
                 is_self: e.pid == self_pid,
+                ..Process::default()
             });
         }
 

@@ -102,6 +102,12 @@ pub struct Process {
     /// Not RAM: for diagnosis only.
     #[serde(default)]
     pub gpu_dedicated_bytes: u64,
+    /// Bytes of its working set that other processes map too (a share
+    /// count of 2 or more in `QueryWorkingSet`). Only `--dump` measures it,
+    /// and only for VM hosts it can read: it shows whether a micro-VM's
+    /// shared memory is its template's. None when not measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_shared_with_others_bytes: Option<u64>,
     pub has_visible_window: bool,
     pub is_self: bool,
 }

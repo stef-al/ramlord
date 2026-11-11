@@ -171,6 +171,13 @@ fn dump(out: &Path) -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail(exit::INPUT, e),
     };
+    // Whether VM hosts share pages with each other (SPEC.md, VM hosts).
+    let rules = Rules::builtin();
+    for p in &mut snapshot.processes {
+        if p.exe().is_some_and(|n| rules.is_vm_host(&n)) {
+            p.ws_shared_with_others_bytes = win::provider::ws_shared_with_others(p.pid);
+        }
+    }
     if let Some(profile) = std::env::var_os("USERPROFILE") {
         snapshot.hide_profile(&profile.to_string_lossy());
     }
