@@ -143,7 +143,6 @@ fn dialogs_offer_their_buttons() {
     let refused = Eviction::Refused {
         tenant: "chrome.exe".into(),
         name: "CHROME".into(),
-        pids: vec![1],
         before: 1,
         no_window: false,
     };
@@ -191,23 +190,45 @@ fn keys_select_open_and_evict_through_the_whole_pipeline() {
     assert!(live.input(Input::Key(Key::Delete), now).is_empty());
     save(live.frame().unwrap(), "dialog-confirm.png");
     let commands = live.input(Input::Key(Key::Enter), now);
-    let Command::Close { pids } = &commands[0] else {
+    let Command::Close { processes } = &commands[0] else {
         panic!("{commands:?}");
     };
-    assert_eq!(pids.len(), 42);
+    assert_eq!(processes.len(), 42);
+    // Each is named with the start time the snapshot gave it, so the
+    // Windows layer can tell it from a later process with the same id.
+    for key in processes {
+        let p = snapshot.processes.iter().find(|p| p.pid == key.pid);
+        assert_eq!(p.map(|p| p.started_at_ms), Some(key.started_at_ms));
+        assert!(key.started_at_ms > 0);
+    }
     assert!(live.waiting());
     // Some stay past 5 seconds: it refuses.
-    live.poll(&[3000], now + 5_000);
+    live.poll(1, now + 5_000);
     assert!(!live.waiting());
     save(live.frame().unwrap(), "dialog-refused.png");
-    assert_eq!(
-        live.input(Input::Key(Key::Delete), now + 6_000),
-        [Command::Terminate { pids: vec![3000] }]
-    );
-    live.poll(&[], now + 6_500);
+    // Meanwhile all but one of its processes have left: Force names the
+    // ones the newest sample shows, not the 42 it was asked with.
+    let mut later = snapshot.clone();
+    later.at_ms += 2_000;
+    let mut kept = 0;
+    later.processes.retain(|p| {
+        let chrome = p
+            .image_path
+            .as_deref()
+            .is_some_and(|i| i.contains("Chrome"));
+        kept += u32::from(chrome);
+        !chrome || kept == 1
+    });
+    live.update(&later).unwrap();
+    let commands = live.input(Input::Key(Key::Delete), now + 6_000);
+    let [Command::Terminate { processes }] = &commands[..] else {
+        panic!("{commands:?}");
+    };
+    assert_eq!(processes.len(), 1);
+    live.poll(0, now + 6_500);
     // The next sample, without Chrome, reports what was vacated.
     let mut after = snapshot.clone();
-    after.at_ms += 2_000;
+    after.at_ms += 4_000;
     let chrome = |p: &ramlord_core::snapshot::Process| {
         p.image_path
             .as_deref()

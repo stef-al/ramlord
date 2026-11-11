@@ -218,6 +218,18 @@ fn owner_sid(process: HANDLE) -> Option<Vec<u8>> {
     }
 }
 
+/// When the process behind `process` started, in UTC milliseconds: the
+/// same value the process list gives, so the two can be compared to tell
+/// a process from a later one with its id. The handle needs
+/// `PROCESS_QUERY_LIMITED_INFORMATION`.
+pub(super) fn started_at_ms(process: HANDLE) -> Option<u64> {
+    let (mut created, mut exited, mut kernel, mut user) = Default::default();
+    // SAFETY: four FILETIME outputs on a live handle.
+    unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) }
+        .ok()
+        .map(|()| filetime_to_unix_ms(created))
+}
+
 fn open(pid: u32) -> Option<Opened> {
     // SAFETY: OpenProcess either fails or returns a handle we own.
     let handle =
@@ -235,17 +247,9 @@ fn open(pid: u32) -> Option<Opened> {
     }
     .ok()
     .map(|()| String::from_utf16_lossy(&buf[..len as usize]));
-    let (mut created, mut exited, mut kernel, mut user) = Default::default();
-    // SAFETY: four FILETIME outputs on a live handle.
-    let started_at_ms = match unsafe {
-        GetProcessTimes(handle.0, &mut created, &mut exited, &mut kernel, &mut user)
-    } {
-        Ok(()) => filetime_to_unix_ms(created),
-        Err(_) => 0,
-    };
     Some(Opened {
         path,
-        started_at_ms,
+        started_at_ms: started_at_ms(handle.0).unwrap_or(0),
         owner: owner_sid(handle.0),
     })
 }

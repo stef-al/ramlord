@@ -655,11 +655,11 @@ fn input(hwnd: HWND, input: Input) {
     let after = with_live(|live, evictor, settings_path, now_ms, after| {
         for command in live.input(input, now_ms) {
             match command {
-                Command::Close { pids } => {
-                    live.report(evictor.close(&pids));
+                Command::Close { processes } => {
+                    live.report(evictor.close(&processes));
                 }
-                Command::Terminate { pids } => {
-                    if let Some(report) = evictor.terminate(&pids) {
+                Command::Terminate { processes } => {
+                    if let Some(report) = evictor.terminate(&processes) {
                         live.report(report);
                     }
                 }
@@ -684,7 +684,7 @@ fn input(hwnd: HWND, input: Input) {
 /// The eviction timer: which of the processes remain.
 fn poll(hwnd: HWND) {
     let after = with_live(|live, evictor, _, now_ms, _| {
-        live.poll(&evictor.remaining(), now_ms);
+        live.poll(evictor.remaining(), now_ms);
     });
     finish(hwnd, &after);
 }

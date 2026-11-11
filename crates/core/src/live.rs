@@ -22,7 +22,7 @@ use crate::smbios::MemoryType;
 use crate::smooth::Smoother;
 use crate::snapshot::Snapshot;
 use crate::tenants::{Lease, building_of, group};
-use crate::ui::{Command, Context, Eviction, Input, Region, Report, Ui, View};
+use crate::ui::{Command, Context, Eviction, Input, ProcessKey, Region, Report, Ui, View};
 
 /// The last sample, laid out, kept so input can be answered between samples.
 struct Scene {
@@ -30,8 +30,8 @@ struct Scene {
     layout: Layout,
     highlight: Option<usize>,
     at_ms: u64,
-    /// Each tenant's processes, by tenant id.
-    pids: BTreeMap<String, Vec<u32>>,
+    /// Each tenant's processes, by tenant id, each with its start time.
+    processes: BTreeMap<String, Vec<ProcessKey>>,
 }
 
 pub struct Live {
@@ -194,10 +194,25 @@ impl Live {
     pub fn update(&mut self, snapshot: &Snapshot) -> Result<bool, BuildingError> {
         let grouping = group(snapshot, &self.rules);
         let gained = self.watch.observe(snapshot, &grouping);
-        let pids = grouping
+        let started: BTreeMap<u32, u64> = snapshot
+            .processes
+            .iter()
+            .map(|p| (p.pid, p.started_at_ms))
+            .collect();
+        let processes = grouping
             .tenants
             .iter()
-            .map(|t| (t.id.clone(), t.pids.clone()))
+            .map(|t| {
+                let keys = t
+                    .pids
+                    .iter()
+                    .map(|&pid| ProcessKey {
+                        pid,
+                        started_at_ms: started.get(&pid).copied().unwrap_or(0),
+                    })
+                    .collect();
+                (t.id.clone(), keys)
+            })
             .collect();
         let mut current = building_of(snapshot, grouping, &self.lease);
         for tenant in &mut current.tenants {
@@ -233,7 +248,7 @@ impl Live {
             layout,
             highlight,
             at_ms: snapshot.at_ms,
-            pids,
+            processes,
         });
         Ok(self.redraw())
     }
@@ -306,7 +321,7 @@ impl Live {
             rows: &rows,
             others: &roll.rest,
             regions: &self.regions,
-            pids: &scene.pids,
+            processes: &scene.processes,
             now_ms,
         };
         let today = scene.building.date.clone();
@@ -348,8 +363,8 @@ impl Live {
         out
     }
 
-    /// Which of the evicted processes remain; call while `waiting()`.
-    pub fn poll(&mut self, remaining: &[u32], now_ms: u64) -> bool {
+    /// How many of the evicted processes remain; call while `waiting()`.
+    pub fn poll(&mut self, remaining: usize, now_ms: u64) -> bool {
         self.ui.poll(remaining, now_ms);
         self.redraw()
     }
@@ -363,11 +378,6 @@ impl Live {
     /// Whether an eviction is waiting for processes to exit.
     pub fn waiting(&self) -> bool {
         self.ui.waiting()
-    }
-
-    /// The processes an eviction is waiting for.
-    pub fn waiting_on(&self) -> &[u32] {
-        self.ui.waiting_on()
     }
 
     /// The last frame drawn.

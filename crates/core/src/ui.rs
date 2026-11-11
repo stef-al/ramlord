@@ -99,14 +99,27 @@ pub enum Input {
     Char(char),
 }
 
+/// One of a tenant's processes as an eviction names it: its id and when
+/// it started. Windows hands a process id out again once its process has
+/// gone, so the id alone could name a stranger by the time the user
+/// answers a dialog; the two together name one process for good. The
+/// Windows layer acts only on a process whose start time matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProcessKey {
+    pub pid: u32,
+    /// UTC milliseconds, as in the snapshot; 0 when unknown.
+    pub started_at_ms: u64,
+}
+
 /// What the Windows layer is asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     /// Post WM_CLOSE to every visible top-level window of these processes,
-    /// then report `Posted` (or `Denied`) and start reporting which remain.
-    Close { pids: Vec<u32> },
+    /// then report `Posted` (or `Denied`) and start reporting how many
+    /// remain.
+    Close { processes: Vec<ProcessKey> },
     /// TerminateProcess on each, then report `Denied` if Windows refused.
-    Terminate { pids: Vec<u32> },
+    Terminate { processes: Vec<ProcessKey> },
     /// Launch `ms-settings:startupapps`.
     OpenStartupSettings,
     /// F2: save the rent roll card and copy it to the clipboard.
@@ -145,15 +158,15 @@ pub enum Eviction {
     Asking {
         tenant: String,
         name: String,
-        pids: Vec<u32>,
         until_ms: u64,
         before: u64,
     },
     /// "NAME refuses to leave." (or has no window to ask): Force or Leave.
+    /// It holds no processes: the user may answer much later, so Force
+    /// takes the tenant's processes from the sample of that moment.
     Refused {
         tenant: String,
         name: String,
-        pids: Vec<u32>,
         before: u64,
         no_window: bool,
     },
@@ -161,7 +174,6 @@ pub enum Eviction {
     Forcing {
         tenant: String,
         name: String,
-        pids: Vec<u32>,
         before: u64,
     },
     /// "NAME has a lawyer. Close it yourself."
@@ -208,7 +220,6 @@ impl Eviction {
             .unwrap_or_default()
     }
 
-    /// The dialog's buttons, primary (Enter) first.
     /// The keys the dialog answers, as its hint line says them.
     pub fn keys(&self) -> &'static str {
         match self {
@@ -218,6 +229,7 @@ impl Eviction {
         }
     }
 
+    /// The dialog's buttons, primary (Enter) first.
     pub fn buttons(&self) -> &'static [Target] {
         match self {
             Eviction::Confirm { .. } => &[Target::CloseIt, Target::Cancel],
@@ -250,8 +262,8 @@ pub struct Context<'a> {
     pub others: &'a [usize],
     /// The clickable regions of the frame on screen.
     pub regions: &'a [Region],
-    /// Each tenant's processes, by tenant id.
-    pub pids: &'a BTreeMap<String, Vec<u32>>,
+    /// Each tenant's processes as of this sample, by tenant id.
+    pub processes: &'a BTreeMap<String, Vec<ProcessKey>>,
     pub now_ms: u64,
 }
 
@@ -299,20 +311,37 @@ impl Ui {
     /// closes the dialog and returns the report for the landlord's
     /// remark: what this sample shows was vacated, never a promise.
     pub fn sampled(&mut self, building: &Building) -> Option<String> {
+        let here = |tenant: &str| building.tenants.iter().find(|t| t.id == tenant);
         let report = match &self.eviction {
             Eviction::Gone {
                 tenant,
                 name,
                 before,
             } => {
-                let left = building
-                    .tenants
-                    .iter()
-                    .find(|t| &t.id == tenant)
-                    .map_or(0, |t| t.rent_bytes);
+                let left = here(tenant).map_or(0, |t| t.rent_bytes);
                 let report = evicted_text(name, before.saturating_sub(left));
                 self.eviction = Eviction::Idle;
                 Some(report)
+            }
+            // Asked to leave, it refused at first and has left since (its
+            // own "save changes?" was answered, say): the question is moot.
+            Eviction::Refused {
+                tenant,
+                name,
+                before,
+                no_window: false,
+            } if here(tenant).is_none() => {
+                let report = evicted_text(name, *before);
+                self.eviction = Eviction::Idle;
+                Some(report)
+            }
+            // It left on its own before anything was asked of it: there is
+            // nothing left to confirm or to force.
+            Eviction::Confirm { tenant, .. } | Eviction::Refused { tenant, .. }
+                if here(tenant).is_none() =>
+            {
+                self.eviction = Eviction::Idle;
+                None
             }
             _ => None,
         };
@@ -356,7 +385,6 @@ impl Ui {
                 },
                 Target::CloseIt,
             ) => {
-                let pids = cx.pids.get(&tenant).cloned().unwrap_or_default();
                 let walls = cx
                     .building
                     .tenants
@@ -368,38 +396,39 @@ impl Ui {
                     self.eviction = Eviction::Refused {
                         tenant,
                         name,
-                        pids,
                         before,
                         no_window: true,
                     };
                     return Vec::new();
                 }
+                let processes = cx.processes.get(&tenant).cloned().unwrap_or_default();
                 self.eviction = Eviction::Asking {
                     tenant,
                     name,
-                    pids: pids.clone(),
                     until_ms: cx.now_ms + POLITE_MS,
                     before,
                 };
-                vec![Command::Close { pids }]
+                vec![Command::Close { processes }]
             }
             (
                 Eviction::Refused {
                     tenant,
                     name,
-                    pids,
                     before,
                     ..
                 },
                 Target::Force,
             ) => {
+                // The tenant's processes now, not those of when it was
+                // asked: some may have left since, and their ids may
+                // belong to someone else.
+                let processes = cx.processes.get(&tenant).cloned().unwrap_or_default();
                 self.eviction = Eviction::Forcing {
                     tenant,
                     name,
-                    pids: pids.clone(),
                     before,
                 };
-                vec![Command::Terminate { pids }]
+                vec![Command::Terminate { processes }]
             }
             (_, Target::Cancel | Target::Leave | Target::Ok) => Vec::new(),
             (other, _) => {
@@ -629,8 +658,8 @@ impl Ui {
         vec![Command::SaveFamily(self.family.clone())]
     }
 
-    /// The Windows layer reports which of the evicted processes remain.
-    pub fn poll(&mut self, remaining: &[u32], now_ms: u64) {
+    /// The Windows layer reports how many of the evicted processes remain.
+    pub fn poll(&mut self, remaining: usize, now_ms: u64) {
         let next = match &self.eviction {
             Eviction::Asking {
                 tenant,
@@ -639,7 +668,7 @@ impl Ui {
                 before,
                 ..
             } => {
-                if remaining.is_empty() {
+                if remaining == 0 {
                     Some(Eviction::Gone {
                         tenant: tenant.clone(),
                         name: name.clone(),
@@ -649,7 +678,6 @@ impl Ui {
                     Some(Eviction::Refused {
                         tenant: tenant.clone(),
                         name: name.clone(),
-                        pids: remaining.to_vec(),
                         before: *before,
                         no_window: false,
                     })
@@ -662,7 +690,7 @@ impl Ui {
                 name,
                 before,
                 ..
-            } if remaining.is_empty() => Some(Eviction::Gone {
+            } if remaining == 0 => Some(Eviction::Gone {
                 tenant: tenant.clone(),
                 name: name.clone(),
                 before: *before,
@@ -687,7 +715,6 @@ impl Ui {
                 if let Eviction::Asking {
                     tenant,
                     name,
-                    pids,
                     before,
                     ..
                 } = std::mem::replace(&mut self.eviction, Eviction::Idle)
@@ -695,7 +722,6 @@ impl Ui {
                     self.eviction = Eviction::Refused {
                         tenant,
                         name,
-                        pids,
                         before,
                         no_window: true,
                     };
@@ -712,14 +738,6 @@ impl Ui {
             Eviction::Asking { .. } | Eviction::Forcing { .. }
         )
     }
-
-    /// The pids an eviction is waiting on.
-    pub fn waiting_on(&self) -> &[u32] {
-        match &self.eviction {
-            Eviction::Asking { pids, .. } | Eviction::Forcing { pids, .. } => pids,
-            _ => &[],
-        }
-    }
 }
 
 #[cfg(test)]
@@ -733,7 +751,19 @@ mod tests {
         building: Building,
         rows: Vec<usize>,
         regions: Vec<Region>,
-        pids: BTreeMap<String, Vec<u32>>,
+        processes: BTreeMap<String, Vec<ProcessKey>>,
+    }
+
+    /// A process that started at `pid` seconds.
+    fn process(pid: u32) -> ProcessKey {
+        ProcessKey {
+            pid,
+            started_at_ms: u64::from(pid) * 1_000,
+        }
+    }
+
+    fn processes(pids: &[u32]) -> Vec<ProcessKey> {
+        pids.iter().copied().map(process).collect()
     }
 
     /// Three tenants; Discord lives in the walls. Rows in that order.
@@ -748,10 +778,10 @@ mod tests {
             1222 * MIB,
         );
         building.tenants[1].flags = vec![Flag::Walls];
-        let pids = [
-            ("chrome", vec![10, 11]),
-            ("discord", vec![20]),
-            ("teams", vec![30]),
+        let processes = [
+            ("chrome", processes(&[10, 11])),
+            ("discord", processes(&[20])),
+            ("teams", processes(&[30])),
         ]
         .into_iter()
         .map(|(id, p)| (id.to_string(), p))
@@ -811,7 +841,7 @@ mod tests {
             building,
             rows: vec![0, 1, 2],
             regions,
-            pids,
+            processes,
         }
     }
 
@@ -822,7 +852,7 @@ mod tests {
                 rows: &self.rows,
                 others: &[],
                 regions: &self.regions,
-                pids: &self.pids,
+                processes: &self.processes,
                 now_ms,
             }
         }
@@ -886,11 +916,16 @@ mod tests {
             "Close CHROME? Unsaved work may be lost if it does not ask first."
         );
         let commands = ui.input(Input::Key(Key::Enter), &w.cx(1_000));
-        assert_eq!(commands, [Command::Close { pids: vec![10, 11] }]);
+        assert_eq!(
+            commands,
+            [Command::Close {
+                processes: processes(&[10, 11])
+            }]
+        );
         ui.report(Report::Posted(2));
-        ui.poll(&[11], 3_000);
+        ui.poll(1, 3_000);
         assert!(matches!(ui.eviction, Eviction::Asking { .. }));
-        ui.poll(&[], 4_000);
+        ui.poll(0, 4_000);
         assert!(matches!(ui.eviction, Eviction::Gone { .. }));
         // The next sample without Chrome says how much was vacated; nothing
         // is promised before. The dialog closes and the rent roll returns.
@@ -913,9 +948,9 @@ mod tests {
         key(&mut ui, &w, Key::Delete);
         ui.input(Input::Click { x: 5, y: 55 }, &w.cx(1_000)); // Close it
         ui.report(Report::Posted(1));
-        ui.poll(&[10, 11], 5_999);
+        ui.poll(2, 5_999);
         assert!(matches!(ui.eviction, Eviction::Asking { .. }));
-        ui.poll(&[10], 6_000);
+        ui.poll(1, 6_000);
         assert_eq!(ui.eviction.message().unwrap(), "CHROME refuses to leave.");
         assert_eq!(ui.eviction.buttons(), [Target::Leave, Target::Force]);
         // Enter is the safe choice: leave it.
@@ -930,12 +965,110 @@ mod tests {
         key(&mut ui, &w, Key::Down);
         key(&mut ui, &w, Key::Delete);
         key(&mut ui, &w, Key::Enter);
-        ui.poll(&[11], 6_000);
-        // Delete, or a click on Force evict, terminates what remains.
+        ui.poll(1, 6_000);
+        // Delete, or a click on Force evict, terminates the tenant's
+        // processes.
         let commands = ui.input(Input::Click { x: 5, y: 65 }, &w.cx(6_100));
-        assert_eq!(commands, [Command::Terminate { pids: vec![11] }]);
-        ui.poll(&[], 6_200);
+        assert_eq!(
+            commands,
+            [Command::Terminate {
+                processes: processes(&[10, 11])
+            }]
+        );
+        ui.poll(0, 6_200);
         assert!(matches!(ui.eviction, Eviction::Gone { .. }));
+    }
+
+    /// The user may answer "refuses to leave" minutes later. By then some
+    /// of the tenant's processes have gone and Windows may have given their
+    /// ids to other programs: Force names the processes the tenant has at
+    /// that moment, each with its start time, never the ids it was asked
+    /// with.
+    #[test]
+    fn force_takes_the_tenants_processes_of_that_moment() {
+        let mut w = world();
+        let mut ui = Ui::new(BTreeSet::new());
+        key(&mut ui, &w, Key::Down);
+        key(&mut ui, &w, Key::Delete);
+        key(&mut ui, &w, Key::Enter);
+        ui.poll(2, 6_000);
+        assert!(matches!(ui.eviction, Eviction::Refused { .. }));
+        // Later: process 10 has exited and its id now belongs to Teams;
+        // Chrome has started a new process, 12.
+        w.processes
+            .insert("chrome".into(), vec![process(11), process(12)]);
+        w.processes.insert(
+            "teams".into(),
+            vec![
+                process(30),
+                ProcessKey {
+                    pid: 10,
+                    started_at_ms: 600_000,
+                },
+            ],
+        );
+        let commands = ui.input(Input::Key(Key::Delete), &w.cx(600_000));
+        assert_eq!(
+            commands,
+            [Command::Terminate {
+                processes: processes(&[11, 12])
+            }]
+        );
+        // With every process gone already, there is nothing to terminate.
+        let mut ui = Ui::new(BTreeSet::new());
+        key(&mut ui, &w, Key::Down);
+        key(&mut ui, &w, Key::Delete);
+        key(&mut ui, &w, Key::Enter);
+        ui.poll(1, 6_000);
+        w.processes.remove("chrome");
+        assert_eq!(
+            ui.input(Input::Key(Key::Delete), &w.cx(7_000)),
+            [Command::Terminate { processes: vec![] }]
+        );
+        ui.poll(0, 7_100);
+        assert!(matches!(ui.eviction, Eviction::Gone { .. }));
+    }
+
+    /// A tenant that leaves while its dialog is open takes the dialog with
+    /// it: there is nobody left to ask or to force.
+    #[test]
+    fn a_dialog_closes_when_its_tenant_has_left() {
+        let w = world();
+        let mut gone = w.building.clone();
+        gone.tenants.remove(0);
+        // Before anything was asked: no report, it left on its own.
+        let mut ui = Ui::new(BTreeSet::new());
+        key(&mut ui, &w, Key::Down);
+        key(&mut ui, &w, Key::Delete);
+        assert!(matches!(ui.eviction, Eviction::Confirm { .. }));
+        assert_eq!(ui.sampled(&w.building), None);
+        assert!(matches!(ui.eviction, Eviction::Confirm { .. }));
+        assert_eq!(ui.sampled(&gone), None);
+        assert_eq!(ui.eviction, Eviction::Idle);
+        // After it was asked and refused: it was evicted after all.
+        let mut ui = Ui::new(BTreeSet::new());
+        key(&mut ui, &w, Key::Down);
+        key(&mut ui, &w, Key::Delete);
+        key(&mut ui, &w, Key::Enter);
+        ui.poll(1, 6_000);
+        assert_eq!(ui.sampled(&w.building), None);
+        assert!(matches!(ui.eviction, Eviction::Refused { .. }));
+        assert_eq!(
+            ui.sampled(&gone).as_deref(),
+            Some("Evicted CHROME. 2.9 GB vacated.")
+        );
+        assert_eq!(ui.eviction, Eviction::Idle);
+        // In the walls and never asked: no claim that we evicted it.
+        let mut ui = Ui::new(BTreeSet::new());
+        key(&mut ui, &w, Key::Down);
+        key(&mut ui, &w, Key::Down);
+        key(&mut ui, &w, Key::Delete);
+        key(&mut ui, &w, Key::Enter);
+        assert!(matches!(ui.eviction, Eviction::Refused { .. }));
+        let mut without_discord = w.building.clone();
+        without_discord.tenants.remove(1);
+        assert_eq!(ui.sampled(&without_discord), None);
+        assert_eq!(ui.eviction, Eviction::Idle);
     }
 
     #[test]
@@ -945,10 +1078,12 @@ mod tests {
         key(&mut ui, &w, Key::Down);
         key(&mut ui, &w, Key::Delete);
         key(&mut ui, &w, Key::Enter);
-        ui.poll(&[10], 6_000);
+        ui.poll(1, 6_000);
         assert_eq!(
             key(&mut ui, &w, Key::Delete),
-            [Command::Terminate { pids: vec![10] }]
+            [Command::Terminate {
+                processes: processes(&[10, 11])
+            }]
         );
         ui.report(Report::Denied);
         assert_eq!(
@@ -978,7 +1113,9 @@ mod tests {
         );
         assert_eq!(
             key(&mut ui, &w, Key::Delete),
-            [Command::Terminate { pids: vec![20] }]
+            [Command::Terminate {
+                processes: processes(&[20])
+            }]
         );
         // A tenant whose windows turn out to be none goes the same way.
         let mut ui = Ui::new(BTreeSet::new());
@@ -1006,14 +1143,14 @@ mod tests {
         // Esc never forces: at the refusal it leaves the tenant be.
         key(&mut ui, &w, Key::Delete);
         key(&mut ui, &w, Key::Enter);
-        ui.poll(&[10], 6_000);
+        ui.poll(1, 6_000);
         assert!(matches!(ui.eviction, Eviction::Refused { .. }));
         assert!(key(&mut ui, &w, Key::Escape).is_empty());
         assert_eq!(ui.eviction, Eviction::Idle);
         // Enter leaves it be too; only Delete or the button forces.
         key(&mut ui, &w, Key::Delete);
         key(&mut ui, &w, Key::Enter);
-        ui.poll(&[10], 6_000);
+        ui.poll(1, 6_000);
         assert!(key(&mut ui, &w, Key::Enter).is_empty());
         assert_eq!(ui.eviction, Eviction::Idle);
         // Family on: Delete does nothing; off again: it asks.
