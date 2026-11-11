@@ -22,6 +22,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use ramlord_core::Frame;
 use ramlord_core::live::Live;
 use ramlord_core::render::pick_scale;
+use ramlord_core::resources;
 use ramlord_core::scene::CARD_PNG_SCALE;
 use ramlord_core::settings::Settings;
 use ramlord_core::ui::{Command, Input, Key};
@@ -43,13 +44,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetMessageW, IDC_ARROW, IsIconic, KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW,
-    SW_SHOW, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetTimer,
-    SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER,
-    WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+    GetMessageW, IDC_ARROW, IsIconic, KillTimer, LoadCursorW, LoadIconW, MSG, PostQuitMessage,
+    RegisterClassW, SW_SHOW, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOZORDER, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED,
+    WS_SYSMENU,
 };
-use windows::core::w;
+use windows::core::{PCWSTR, w};
 
 use super::evict::Evictor;
 use super::extras;
@@ -263,6 +265,13 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
             hInstance: instance.into(),
             lpszClassName: class,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // The app icon the build script put in the exe; Windows picks
+            // the small one from the same group for the title bar.
+            hIcon: LoadIconW(
+                Some(instance.into()),
+                PCWSTR(usize::from(resources::ICON_ID) as *const u16),
+            )
+            .unwrap_or_default(),
             ..Default::default()
         };
         if RegisterClassW(&wc) == 0 {

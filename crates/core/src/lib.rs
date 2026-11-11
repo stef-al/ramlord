@@ -27,6 +27,7 @@ pub mod palette;
 pub mod prices;
 pub mod remarks;
 pub mod render;
+pub mod resources;
 pub mod rules;
 pub mod scene;
 pub mod settings;
@@ -56,6 +57,18 @@ pub fn render_card(building: &Building, saved_hues: &HueBook) -> Frame {
     let (layout, _) = Layout::new(building, saved_hues);
     let draws = scene::card(building, &layout);
     render::rasterize(scene::CARD_WIDTH, scene::CARD_HEIGHT, palette::SKY, &draws)
+}
+
+/// Draws the app icon at one of `scene::APP_ICON_SIZES`, over
+/// `palette::TRAY_CLEAR` (transparent). None for any other size.
+pub fn render_app_icon(size: u32) -> Option<Frame> {
+    if !scene::APP_ICON_SIZES.contains(&size) {
+        return None;
+    }
+    let art = if size % 32 == 0 { 32 } else { 16 };
+    let draws = scene::app_icon(art);
+    let frame = render::rasterize(art, art, palette::TRAY_CLEAR, &draws);
+    Some(frame.scaled(size / art))
 }
 
 /// Draws the tray icon, 16 by 16 (see `scene::tray_icon`).

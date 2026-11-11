@@ -16,6 +16,11 @@ ramlord-core.workspace = true
 png.workspace = true
 serde_json.workspace = true
 
+# The build script draws the app icon into the exe's resources.
+[build-dependencies]
+ramlord-core.workspace = true
+png.workspace = true
+
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
 features = [
