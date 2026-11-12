@@ -42,12 +42,13 @@ fi
 notepad_running() { pgrep -f 'notepad\.exe' >/dev/null; }
 
 wine notepad 'C:\ramlord-big.txt' >/dev/null 2>&1 &
-for _ in $(seq 60); do
-  notepad_running && break
+# Notepad's title names the file once it has read it, which takes 5 to 15
+# seconds. A click or a key sent before that is lost.
+for _ in $(seq 120); do
+  [ -n "$(xdotool search --name 'ramlord-big' 2>/dev/null | head -1)" ] && break
   sleep 0.5
 done
-# Give it time to read the file.
-sleep 8
+sleep 2
 if [ "$MODE" = force ]; then
   # Unsaved work: a click in Notepad's text and one typed letter.
   xdotool mousemove 500 400 click 1
