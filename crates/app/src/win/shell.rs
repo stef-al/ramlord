@@ -47,13 +47,13 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, GetMessageW, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IsIconic,
-    IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, MSG, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
-    SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
-    WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
-    WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+    IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, MSG, PostMessageW, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMINNOACTIVE,
+    SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
+    SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
+    WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
+    WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
 };
 use windows::core::{PCWSTR, w};
 
@@ -62,6 +62,10 @@ use super::extras;
 use super::instance::{CLASS, WM_SHOW_FIRST};
 use super::provider::Provider;
 use super::tray::{self, Tray, WM_TRAY};
+
+/// Posted to ourselves to size the window once the state is free again
+/// (see `rescale`). `WM_APP + 1` is the tray's, `+ 3` the second start's.
+const WM_REFIT: u32 = WM_APP + 4;
 
 /// Sampling intervals (SPEC.md, Timing).
 const SAMPLE_MS: u32 = 2_000;
@@ -174,13 +178,15 @@ fn window_size(hwnd: Option<HWND>, w: i32, h: i32) -> (i32, i32) {
 }
 
 /// Picks the scale for `monitor`, stores it and returns the client size.
-fn rescale(monitor: HMONITOR) -> (i32, i32) {
+/// None when the state is in use: a message Windows sends from inside
+/// another call (a display change while the tray icon is being updated,
+/// say) arrives in the middle of the code that holds it. The caller then
+/// asks again with `WM_REFIT`, once that code has finished.
+fn rescale(monitor: HMONITOR) -> Option<(i32, i32)> {
     let (work_w, work_h) = work_area(monitor);
     STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        let Some(state) = s.as_mut() else {
-            return (0, 0);
-        };
+        let mut s = s.try_borrow_mut().ok()?;
+        let state = s.as_mut()?;
         // A scale chosen in settings wins; otherwise the largest that fits.
         let chosen = match &state.content {
             Content::Live { live, .. } => live.settings().scale,
@@ -190,18 +196,29 @@ fn rescale(monitor: HMONITOR) -> (i32, i32) {
             || pick_scale(state.frame.width, state.frame.height, work_w, work_h),
             |n| n.clamp(2, 5),
         );
-        (
+        Some((
             (state.frame.width * state.scale) as i32,
             (state.frame.height * state.scale) as i32,
-        )
+        ))
     })
+}
+
+/// Asks for `fit` again once the code now holding the state has finished.
+fn refit_later(hwnd: HWND) {
+    // SAFETY: posts a message to our own window.
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_REFIT, WPARAM(0), LPARAM(0));
+    }
 }
 
 /// Sizes the window for the monitor it is on.
 fn fit(hwnd: HWND) {
     // SAFETY: plain query on our window.
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    let (cw, ch) = rescale(monitor);
+    let Some((cw, ch)) = rescale(monitor) else {
+        refit_later(hwnd);
+        return;
+    };
     let (w, h) = window_size(Some(hwnd), cw, ch);
     // SAFETY: resizes our own window; no state is borrowed here.
     unsafe {
@@ -251,7 +268,7 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
     // window knows its own monitor and DPI.
     // SAFETY: plain query.
     let primary = unsafe { MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY) };
-    let (cw, ch) = rescale(primary);
+    let (cw, ch) = rescale(primary).ok_or("no window state")?;
     let (w, h) = window_size(None, cw, ch);
 
     // The demo's window has a class of its own: a second start of the app
@@ -346,7 +363,11 @@ fn tick(hwnd: HWND) {
     let hidden = unsafe { !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() };
     let want = if hidden { SAMPLE_HIDDEN_MS } else { SAMPLE_MS };
     let (changed, retime) = STATE.with(|s| {
-        let mut s = s.borrow_mut();
+        // In use: this tick arrived inside another call. The next one is
+        // two seconds away.
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return (false, false);
+        };
         let Some(state) = s.as_mut() else {
             return (false, false);
         };
@@ -840,6 +861,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             show_window(hwnd);
             LRESULT(0)
         }
+        WM_REFIT => {
+            fit(hwnd);
+            LRESULT(0)
+        }
         m if m != 0 && m == TASKBAR_CREATED.get() => {
             STATE.with(|s| {
                 if let Ok(mut s) = s.try_borrow_mut()
@@ -876,7 +901,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             let suggested = unsafe { *(lparam.0 as *const RECT) };
             // SAFETY: plain query.
             let monitor = unsafe { MonitorFromRect(&suggested, MONITOR_DEFAULTTONEAREST) };
-            let (cw, ch) = rescale(monitor);
+            let Some((cw, ch)) = rescale(monitor) else {
+                refit_later(hwnd);
+                return LRESULT(0);
+            };
             let (w, h) = window_size(Some(hwnd), cw, ch);
             // SAFETY: moves and resizes our own window.
             unsafe {
