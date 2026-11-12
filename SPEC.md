@@ -166,7 +166,7 @@ A tenant is one app, and its rent is the private memory it holds in RAM right no
 | Commit used and limit | `CommitTotal` and `CommitLimit` from the same call | The "building full" alert |
 | Staff bytes | Capacity minus vacant minus all tenants' rent | Staff units |
 
-- The process list reports the private working set on every Windows 10 and 11. When every process reports 0 there, use the working set, set `rent_is_estimate` and prefix amounts with `~`. Wine behaves this way. RAMlord's own line reads `PrivateWorkingSetSize` from `GetProcessMemoryInfo` with `PROCESS_MEMORY_COUNTERS_EX2` ([Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex2)), and its working set where Windows is too old for that.
+- The process list reports the private working set on every Windows 10 and 11. When every process reports 0 there, use the working set, set `rent_is_estimate` and prefix amounts with `~`. Wine behaves this way. `--self-test` checks RAMlord's own memory budget with `PrivateWorkingSetSize` from `GetProcessMemoryInfo` and `PROCESS_MEMORY_COUNTERS_EX2` ([Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex2)), or with the working set where Windows is too old for that structure.
 - Task Manager's Memory column is the private working set, and its Commit size column is what this spec calls the lease ([Pavel Yosifovich](https://scorpiosoftware.net/2023/04/12/memory-information-in-task-manager/)).
 - Installed memory includes what the hardware reserves, so that part counts as Staff. If rent plus vacant ever exceeds capacity, Staff is zero and Vacant shrinks until the three sum to capacity.
 - Rent in money is bytes divided by 2^30, times the price per GB. Show whole dollars, and cents under $1.
@@ -388,7 +388,8 @@ Counters are added by their English names (`PdhAddEnglishCounterW`), so every la
 - `settings.json` is read key by key. A value that does not fit keeps its default without costing the others; a scale outside 2 to 5 is automatic, the away threshold stays within 1 hour to 7 days, and a custom price the building could not be billed at (zero, no symbol, no date) is dropped.
 - Each process is opened once in its life, not at every sample: its path and owner never change, and the process list's start time tells it from a later process with its id.
 - The Run value follows the exe: when RAMlord starts and its value names another path, the value is rewritten. State is also saved when Windows shuts down or the user signs out.
-- The card on the clipboard is a 24-bit bitmap. A 32-bit one has a spare byte per pixel that some programs read as transparency.
+- The card on the clipboard is a 24-bit bitmap. A 32-bit one has a spare byte per pixel that some programs read as transparency. When another program holds the clipboard, F2 tries for a third of a second and then says "Rent roll saved to Pictures. The clipboard was busy."
+- Typographic quotes, dashes, the ellipsis and no-break spaces draw as their plain forms.
 - The price file is fetched through the proxy the system's settings give, with ten-second timeouts.
 
 **Remaining limits.** Windows says nothing more about SHARED, OTHER without administrator rights: shared program code and files, page tables, memory drivers lock. A process's graphics memory and its boxes are estimates, marked `~` where they are shown as amounts.
