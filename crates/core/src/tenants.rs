@@ -1,0 +1,670 @@
+//! From processes to tenants (SPEC.md, Tenants and rent): a Snapshot and
+//! the rules in, tenant samples and a Building out.
+//!
+//! 1. Staff: a process that cannot be opened, runs in session 0, has an
+//!    image name in `staff`, or is RAMlord itself. A process under the
+//!    Windows directory is also Staff when it owns no visible window and
+//!    is not in `launchers` (nor a `parent` helper, which follows its
+//!    parent instead).
+//! 2. Root: walk up the parent chain while the parent is alive, older than
+//!    the child, not Staff and not in `launchers`.
+//! 3. Tenant: processes whose roots share one image path; the id is that
+//!    path in lower case.
+//! 4. Helpers: `parent` follows the parent even if it is a launcher (Staff
+//!    if the parent is Staff); an image such as `steam.exe` joins that
+//!    tenant if it exists.
+//!
+//! Two additions the owner asked for: a virtual machine host (`vm_hosts`,
+//! such as `vmmem`) is a tenant of its own even in session 0, since its
+//! memory is a guest's, and its rent counts its shared working set too,
+//! since a guest's memory is mapped rather than private (HP Sure Click's
+//! micro-VM manager holds over a gigabyte with no private memory at all).
+//! A micro-VM maps its template's memory copy-on-write, so the same pages
+//! sit in two processes' working sets: the shared part counts once per
+//! tenant, the largest standing for all. And the Memory
+//! Compression process (`compression`)
+//! holds tenants' pages compressed, which the tower shows as boxes in the
+//! basement rather than as Staff.
+
+use std::collections::BTreeMap;
+
+use crate::building::{Building, Price, StaffParts, Tenant};
+use crate::date::Date;
+use crate::font::has_glyph;
+use crate::rules::{Helper, Rules};
+use crate::snapshot::{Process, Snapshot};
+
+/// Where a process ends up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Staff,
+    /// Belongs to the tenant rooted at this pid.
+    Root(u32),
+}
+
+/// One tenant at one moment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TenantSample {
+    /// The root image path in lower case.
+    pub id: String,
+    pub name: String,
+    pub rent_bytes: u64,
+    pub lease_bytes: u64,
+    pub process_count: u32,
+    /// Member processes, lowest pid first.
+    pub pids: Vec<u32>,
+    /// Committed private memory that is not in RAM now: compressed in the
+    /// basement, written to the page file, or never touched. Summed over
+    /// the members of max(commit - private working set, 0). An estimate:
+    /// Windows does not tell which pages of a process are compressed.
+    pub packed_bytes: u64,
+    /// Graphics memory its members hold in RAM, estimated (`gpu_owned`),
+    /// before it is fitted to the gallery.
+    pub gpu_bytes: u64,
+    /// When its oldest member started (0 when unknown).
+    pub started_at_ms: u64,
+    /// Any member owns a visible window.
+    pub has_window: bool,
+}
+
+/// The result of grouping one snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Grouping {
+    /// Tenants by id.
+    pub tenants: Vec<TenantSample>,
+    /// The role of every process, by pid.
+    pub roles: BTreeMap<u32, Role>,
+    /// RAMlord's own rent: the `MY OFFICE` line. It is part of Staff.
+    pub own_bytes: u64,
+    /// The Memory Compression process's working set: the boxes.
+    pub boxes_bytes: u64,
+    /// Graphics memory in RAM: the adapters' total when Windows reports
+    /// it, else the processes' estimates summed. The gallery.
+    pub gallery_bytes: u64,
+    /// Every process's `gpu_owned`, summed.
+    pub gpu_owned_bytes: u64,
+    /// Staff processes' private working sets (the boxes' process apart):
+    /// the Staff card's SERVICES.
+    pub services_bytes: u64,
+    /// Staff processes' packed memory, for their share of the boxes.
+    pub staff_packed_bytes: u64,
+}
+
+impl Grouping {
+    pub fn tenant_of(&self, pid: u32) -> Option<&TenantSample> {
+        self.tenants.iter().find(|t| t.pids.contains(&pid))
+    }
+
+    pub fn rent_bytes(&self) -> u64 {
+        self.tenants.iter().map(|t| t.rent_bytes).sum()
+    }
+}
+
+/// True for a path under a `?:\Windows\` folder or `%SystemRoot%\`.
+fn under_windows_dir(path: &str) -> bool {
+    let lower = path.to_lowercase().replace('/', "\\");
+    // Compared as bytes: a path may hold any script, and a string slice at
+    // a fixed byte would cut a character in two.
+    let drive = match lower.as_bytes() {
+        [letter, rest @ ..] => letter.is_ascii_alphabetic() && rest.starts_with(b":\\windows\\"),
+        [] => false,
+    };
+    drive || lower.starts_with("%systemroot%\\") || lower.starts_with("%windir%\\")
+}
+
+struct Grouper<'a> {
+    rules: &'a Rules,
+    by_pid: BTreeMap<u32, &'a Process>,
+    roles: BTreeMap<u32, Role>,
+    visiting: Vec<u32>,
+}
+
+impl<'a> Grouper<'a> {
+    /// Staff no matter what its parent is.
+    fn hard_staff(&self, p: &Process) -> bool {
+        if self.is_vm_host(p) {
+            return false;
+        }
+        // A process that cannot be opened has no image path, though the
+        // process list still names it: it is Staff all the same.
+        p.is_self
+            || p.session == 0
+            || p.image_path.is_none()
+            || p.exe().is_none_or(|name| self.rules.is_staff(&name))
+    }
+
+    fn is_vm_host(&self, p: &Process) -> bool {
+        p.exe().is_some_and(|n| self.rules.is_vm_host(&n))
+    }
+
+    /// The parent, if it is alive and older than `p` (otherwise the pid was
+    /// reused, or the parent has exited).
+    fn parent(&self, p: &Process) -> Option<&'a Process> {
+        let parent = *self.by_pid.get(&p.parent_pid)?;
+        (parent.pid != p.pid && parent.started_at_ms <= p.started_at_ms).then_some(parent)
+    }
+
+    fn role(&mut self, pid: u32) -> Role {
+        if let Some(&role) = self.roles.get(&pid) {
+            return role;
+        }
+        if self.visiting.contains(&pid) {
+            // A parent cycle: stop here.
+            return Role::Root(pid);
+        }
+        self.visiting.push(pid);
+        let role = self.resolve(pid);
+        self.visiting.retain(|&v| v != pid);
+        self.roles.insert(pid, role);
+        role
+    }
+
+    fn resolve(&mut self, pid: u32) -> Role {
+        let p = self.by_pid[&pid];
+        if self.hard_staff(p) {
+            return Role::Staff;
+        }
+        if self.is_vm_host(p) {
+            return Role::Root(pid);
+        }
+        let name = p.exe().unwrap_or_default();
+        match self.rules.helper(&name).cloned() {
+            Some(Helper::Parent) => {
+                if let Some(parent) = self.parent(p) {
+                    return self.role(parent.pid);
+                }
+            }
+            Some(Helper::Join(owner)) => {
+                if let Some(root) = self.owner_root(&owner) {
+                    return Role::Root(root);
+                }
+            }
+            None => {}
+        }
+        let windows_dir = p.image_path.as_deref().is_some_and(under_windows_dir);
+        if windows_dir
+            && !p.has_visible_window
+            && !self.rules.is_launcher(&name)
+            && self.rules.helper(&name) != Some(&Helper::Parent)
+        {
+            return Role::Staff;
+        }
+        if let Some(parent) = self.parent(p) {
+            let launcher = parent.exe().is_some_and(|n| self.rules.is_launcher(&n));
+            if !launcher && let Role::Root(root) = self.role(parent.pid) {
+                return Role::Root(root);
+            }
+        }
+        Role::Root(pid)
+    }
+
+    /// The root of the tenant whose root image is `owner`, if one exists:
+    /// the first process with that image name, by start time then pid,
+    /// that roots its own tenant.
+    fn owner_root(&mut self, owner: &str) -> Option<u32> {
+        let mut candidates: Vec<&Process> = self
+            .by_pid
+            .values()
+            .copied()
+            .filter(|p| p.exe().as_deref() == Some(owner))
+            .collect();
+        candidates.sort_by_key(|p| (p.started_at_ms, p.pid));
+        for candidate in candidates {
+            if let Role::Root(root) = self.role(candidate.pid)
+                && self.by_pid[&root].exe().as_deref() == Some(owner)
+            {
+                return Some(root);
+            }
+        }
+        None
+    }
+}
+
+/// The display name of a tenant rooted at `root` (SPEC.md): from `names`,
+/// else from the FileDescription without a leading company word, else
+/// from the file name.
+pub fn tenant_name(root: &Process, rules: &Rules) -> String {
+    let image = root.exe().unwrap_or_default();
+    if let Some(name) = rules.names.get(&image) {
+        return name.clone();
+    }
+    // Trademark signs have no glyph and do not belong in a name.
+    let description = root
+        .description
+        .as_deref()
+        .map(|d| d.replace(['\u{ae}', '\u{2122}', '\u{a9}'], ""));
+    let words: Vec<&str> = description
+        .as_deref()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    let described = words.split_first().map(|(first, rest)| {
+        if !rest.is_empty() && rules.companies.contains(&first.to_lowercase()) {
+            rest.join(" ")
+        } else {
+            words.join(" ")
+        }
+    });
+    // The file's name without `.exe`: from the path, or from the process
+    // list when the process could not be opened.
+    let file = root
+        .image_path
+        .as_deref()
+        .map(|p| p.rsplit(['\\', '/']).next().unwrap_or(p))
+        .or(root.image_name.as_deref())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("?");
+    let stem = match file.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && extension.eq_ignore_ascii_case("exe") => {
+            stem
+        }
+        _ => file,
+    };
+    // The font is Latin. A description in another script (a Russian
+    // Windows calls Task Manager "Диспетчер задач") would draw as question
+    // marks, so the file's name stands in when it reads better.
+    match described {
+        Some(name) if readable(&name) || !readable(stem) => name,
+        _ => stem.to_string(),
+    }
+}
+
+/// Whether at least half of a name's characters have glyphs.
+fn readable(name: &str) -> bool {
+    let letters = name.chars().filter(|c| !c.is_whitespace());
+    let drawn = letters.clone().filter(|&c| has_glyph(c)).count();
+    drawn > 0 && drawn * 2 >= letters.count()
+}
+
+/// Groups a snapshot's processes into tenants.
+pub fn group(snapshot: &Snapshot, rules: &Rules) -> Grouping {
+    let mut grouper = Grouper {
+        rules,
+        by_pid: snapshot.processes.iter().map(|p| (p.pid, p)).collect(),
+        roles: BTreeMap::new(),
+        visiting: Vec::new(),
+    };
+    let pids: Vec<u32> = grouper.by_pid.keys().copied().collect();
+    for &pid in &pids {
+        grouper.role(pid);
+    }
+
+    let mut tenants: BTreeMap<String, TenantSample> = BTreeMap::new();
+    // Per tenant with VM host processes: the largest shared working set
+    // among them.
+    let mut guests: BTreeMap<String, u64> = BTreeMap::new();
+    for &pid in &pids {
+        let Role::Root(root) = grouper.roles[&pid] else {
+            continue;
+        };
+        let root = grouper.by_pid[&root];
+        // The root's image path in lower case. A VM host goes by its name:
+        // its processes are one tenant whether or not they could be opened
+        // (HP Sure Click runs its manager in session 0, unopened, and each
+        // micro-VM in the user's session).
+        let id = if grouper.is_vm_host(root) {
+            root.exe()
+        } else {
+            root.image_path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+                .map(str::to_lowercase)
+        }
+        .or_else(|| root.exe())
+        .unwrap_or_else(|| "?".into());
+        let p = grouper.by_pid[&pid];
+        let tenant = tenants.entry(id.clone()).or_insert_with(|| TenantSample {
+            id,
+            name: tenant_name(root, rules),
+            rent_bytes: 0,
+            lease_bytes: 0,
+            process_count: 0,
+            pids: Vec::new(),
+            packed_bytes: 0,
+            gpu_bytes: 0,
+            started_at_ms: 0,
+            has_window: false,
+        });
+        tenant.rent_bytes += p.rent_bytes;
+        tenant.lease_bytes += p.lease_bytes;
+        tenant.process_count += 1;
+        tenant.pids.push(pid);
+        let gpu = gpu_owned(p);
+        // A guest's memory is mapped into its host, not private to it: a VM
+        // host holds its whole working set, and its shared part is added
+        // once per tenant below.
+        let held = if grouper.is_vm_host(p) {
+            let shared = guests.entry(tenant.id.clone()).or_default();
+            *shared = (*shared).max(p.working_set_bytes.saturating_sub(p.rent_bytes));
+            p.rent_bytes.max(p.working_set_bytes)
+        } else {
+            p.rent_bytes
+        };
+        tenant.packed_bytes += p.lease_bytes.saturating_sub(held).saturating_sub(gpu);
+        tenant.gpu_bytes += gpu;
+        tenant.has_window |= p.has_visible_window;
+        if p.started_at_ms > 0
+            && (tenant.started_at_ms == 0 || p.started_at_ms < tenant.started_at_ms)
+        {
+            tenant.started_at_ms = p.started_at_ms;
+        }
+    }
+    // Windows does not charge a guest's memory to its host's commit, so a
+    // VM host's lease is at least what it holds.
+    for (id, shared) in guests {
+        let tenant = tenants.get_mut(&id).expect("a guest's tenant");
+        tenant.rent_bytes += shared;
+        tenant.lease_bytes = tenant.lease_bytes.max(tenant.rent_bytes);
+    }
+    let own_bytes = snapshot
+        .processes
+        .iter()
+        .filter(|p| p.is_self)
+        .map(|p| p.rent_bytes)
+        .sum();
+    let compression = |p: &Process| p.exe().is_some_and(|n| rules.is_compression(&n));
+    let boxes_bytes = snapshot
+        .processes
+        .iter()
+        .filter(|p| compression(p))
+        .map(|p| p.rent_bytes.max(p.working_set_bytes))
+        .sum();
+    let staff = || {
+        snapshot
+            .processes
+            .iter()
+            .filter(|p| grouper.roles[&p.pid] == Role::Staff && !compression(p))
+    };
+    let services_bytes = staff().map(|p| p.rent_bytes).sum();
+    let staff_packed_bytes = staff()
+        .map(|p| {
+            p.lease_bytes
+                .saturating_sub(p.rent_bytes)
+                .saturating_sub(gpu_owned(p))
+        })
+        .sum();
+    let gpu_owned_bytes = snapshot.processes.iter().map(gpu_owned).sum();
+    let gallery_bytes = match snapshot.gpu_shared_bytes {
+        0 => gpu_owned_bytes,
+        adapters => adapters,
+    };
+    Grouping {
+        tenants: tenants.into_values().collect(),
+        roles: grouper.roles,
+        own_bytes,
+        boxes_bytes,
+        gallery_bytes,
+        gpu_owned_bytes,
+        services_bytes,
+        staff_packed_bytes,
+    }
+}
+
+/// Graphics memory a process holds itself, estimated. Windows' Shared
+/// Usage counts every surface a process can see, so the desktop compositor,
+/// which sees every window's, reports many times what it holds (11 GB on
+/// the owner's 16 GB PC, with 2.7 GB in use by the adapter). A process pays
+/// commit for the graphics memory it allocates and none for what it only
+/// sees, so its share is capped at its commit beyond its working set. On
+/// the owner's PC these estimates summed to 2,868 MiB against the
+/// adapter's measured 2,759.
+pub fn gpu_owned(p: &Process) -> u64 {
+    p.gpu_shared_bytes
+        .min(p.lease_bytes.saturating_sub(p.rent_bytes))
+}
+
+/// Staff, Vacant and the gallery, in that order of trust: Vacant is
+/// measured and comes first, as in `balance`; the gallery comes out of
+/// what would be Staff, never out of Vacant. Returns
+/// `(staff_bytes, vacant_bytes, gallery_bytes)`.
+pub fn balance_with_gallery(
+    capacity: u64,
+    available: u64,
+    rent_and_boxes: u64,
+    gallery: u64,
+) -> (u64, u64, u64) {
+    let (staff, vacant) = balance(capacity, available, rent_and_boxes);
+    let gallery = gallery.min(staff);
+    (staff - gallery, vacant, gallery)
+}
+
+/// Staff and Vacant from capacity, available memory and the tenants' rent
+/// (SPEC.md, What is measured): Staff is what is left. If rent plus vacant
+/// exceeds capacity, Staff is zero and Vacant shrinks until the three sum
+/// to capacity. If rent alone exceeds capacity (possible only with
+/// estimated rent), both are zero. Returns `(staff_bytes, vacant_bytes)`.
+pub fn balance(capacity: u64, available: u64, rent: u64) -> (u64, u64) {
+    let vacant = available.min(capacity.saturating_sub(rent));
+    let staff = capacity.saturating_sub(rent).saturating_sub(vacant);
+    (staff, vacant)
+}
+
+/// What a Building needs besides the snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lease {
+    pub memory_type: String,
+    pub price: Price,
+    pub remark: String,
+}
+
+impl Lease {
+    /// RAM at the DDR5 price, without a remark: what `--snapshot` and
+    /// `--self-test` bill at, and what a live building starts from until
+    /// `Live::configure` gives it its settings and prices.
+    pub fn placeholder() -> Lease {
+        Lease {
+            memory_type: "RAM".into(),
+            price: Price::placeholder(),
+            remark: String::new(),
+        }
+    }
+}
+
+/// Groups `snapshot` and builds the Building the layout draws, without
+/// flags: those need watched time, which `flags::Watch` keeps.
+pub fn building(snapshot: &Snapshot, rules: &Rules, lease: &Lease) -> Building {
+    building_of(snapshot, group(snapshot, rules), lease)
+}
+
+/// The Building for a snapshot already grouped.
+pub fn building_of(snapshot: &Snapshot, grouping: Grouping, lease: &Lease) -> Building {
+    let rent = grouping.rent_bytes();
+    let boxes = grouping.boxes_bytes;
+    let (staff, vacant, gallery) = balance_with_gallery(
+        snapshot.capacity_bytes,
+        snapshot.available_bytes,
+        rent.saturating_add(boxes),
+        grouping.gallery_bytes,
+    );
+    // The estimates may add up to more than the gallery holds: fit them.
+    let fitted = |gpu: u64| -> u64 {
+        let owned = u128::from(grouping.gpu_owned_bytes.max(gallery).max(1));
+        (u128::from(gpu) * u128::from(gallery) / owned) as u64
+    };
+    // Installed memory Windows never gets; unknown without its total.
+    let hardware = match snapshot.physical_total_bytes {
+        0 => 0,
+        total => snapshot.capacity_bytes.saturating_sub(total),
+    };
+    let measured = StaffParts {
+        services_bytes: grouping.services_bytes,
+        hardware_bytes: hardware,
+        kernel_pool_bytes: snapshot.kernel_nonpaged_bytes + snapshot.kernel_paged_resident_bytes,
+        drivers_bytes: snapshot.driver_bytes + snapshot.kernel_code_bytes,
+        file_cache_bytes: snapshot.file_cache_bytes,
+        modified_bytes: snapshot.modified_bytes,
+        other_bytes: 0,
+    };
+    Building {
+        kind: "building".into(),
+        date: Date::from_unix_ms(snapshot.at_ms).iso(),
+        memory_type: lease.memory_type.clone(),
+        price: lease.price.clone(),
+        capacity_bytes: snapshot.capacity_bytes,
+        vacant_bytes: vacant,
+        staff_bytes: staff,
+        own_bytes: grouping.own_bytes,
+        remark: lease.remark.clone(),
+        rent_is_estimate: snapshot.rent_is_estimate,
+        boxes_bytes: boxes,
+        gallery_bytes: gallery,
+        staff_parts: StaffParts::cut(staff, &measured),
+        staff_packed_bytes: grouping.staff_packed_bytes,
+        tenants: grouping
+            .tenants
+            .into_iter()
+            .map(|t| Tenant {
+                id: t.id,
+                name: t.name,
+                rent_bytes: t.rent_bytes,
+                lease_bytes: t.lease_bytes,
+                process_count: t.process_count,
+                packed_bytes: t.packed_bytes,
+                gpu_bytes: fitted(t.gpu_bytes),
+                flags: Vec::new(),
+            })
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_windows_directory_on_any_drive() {
+        assert!(under_windows_dir(r"C:\Windows\System32\svchost.exe"));
+        assert!(under_windows_dir(r"d:\WINDOWS\explorer.exe"));
+        assert!(under_windows_dir(r"%SystemRoot%\System32\conhost.exe"));
+        assert!(!under_windows_dir(r"C:\WindowsApps\x.exe"));
+        assert!(!under_windows_dir(
+            r"C:\Program Files\WindowsApps\Calc\calc.exe"
+        ));
+        assert!(!under_windows_dir("windows"));
+    }
+
+    /// Paths are sliced by bytes nowhere: a folder in Chinese, Cyrillic or
+    /// with an accent at the wrong byte must not stop the app.
+    #[test]
+    fn paths_in_any_script_are_read_without_slicing_a_character() {
+        for path in [
+            r"D:\游戏\原神\game.exe",
+            r"D:\ab\Программа\app.exe",
+            r"c:\abcdefgä\x.exe",
+            r"C:\Wïndows\x.exe",
+            r"é:\windows\x.exe",
+            "日本語",
+            "",
+        ] {
+            assert!(!under_windows_dir(path), "{path}");
+        }
+        assert!(under_windows_dir(r"C:\Windows\Fonts\字体.exe"));
+        let rules = Rules::builtin();
+        let name = |p| tenant_name(&named(Some(p), None), &rules);
+        assert_eq!(name(r"C:\x\日本語"), "日本語");
+        assert_eq!(name(r"C:\x\日本.exe"), "日本");
+        assert_eq!(name(r"C:\x\über"), "über");
+        assert_eq!(name(r"C:\x\é.EXE"), "é");
+        assert_eq!(name(r"C:\x\.exe"), ".exe");
+        assert_eq!(name(r"C:\x\exe"), "exe");
+    }
+
+    /// A process that could not be opened has no path, but the process
+    /// list still names it.
+    #[test]
+    fn a_tenant_without_a_path_is_named_after_its_image() {
+        let rules = Rules::builtin();
+        let p = Process {
+            image_name: Some("NewVmHost.exe".into()),
+            ..Process::default()
+        };
+        assert_eq!(tenant_name(&p, &rules), "NewVmHost");
+        assert_eq!(tenant_name(&Process::default(), &rules), "?");
+    }
+
+    #[test]
+    fn balance_leaves_staff_as_the_remainder() {
+        assert_eq!(balance(100, 30, 50), (20, 30));
+    }
+
+    #[test]
+    fn balance_shrinks_vacant_when_rent_plus_vacant_exceeds_capacity() {
+        assert_eq!(balance(100, 30, 80), (0, 20));
+        assert_eq!(balance(100, 30, 120), (0, 0));
+        assert_eq!(balance(100, 130, 0), (0, 100));
+    }
+
+    fn named(path: Option<&str>, description: Option<&str>) -> Process {
+        Process {
+            image_path: path.map(String::from),
+            description: description.map(String::from),
+            ..Process::default()
+        }
+    }
+
+    #[test]
+    fn names_come_from_the_rules_then_the_description_then_the_file() {
+        let rules = Rules::builtin();
+        let name = |p, d| tenant_name(&named(p, d), &rules);
+        assert_eq!(
+            name(Some(r"C:\x\Code.exe"), Some("Visual Studio Code")),
+            "VS Code"
+        );
+        assert_eq!(
+            name(Some(r"C:\x\olk.exe"), Some("Microsoft Outlook")),
+            "Outlook"
+        );
+        assert_eq!(
+            name(Some(r"C:\x\a.exe"), Some("  Visual   Studio ")),
+            "Visual Studio"
+        );
+        assert_eq!(name(Some(r"C:\x\a.exe"), Some("Microsoft")), "Microsoft");
+        assert_eq!(name(Some(r"C:\x\paint.net.EXE"), None), "paint.net");
+        // Seen on the Windows runner: the sign hid the company word.
+        assert_eq!(
+            name(
+                Some(r"C:\x\vctip.exe"),
+                Some("Microsoft\u{ae} VC compiler and tools")
+            ),
+            "VC compiler and tools"
+        );
+        assert_eq!(
+            name(
+                Some(r"C:\x\igcc.exe"),
+                Some("Intel\u{ae} Graphics\u{2122} Command Center")
+            ),
+            "Graphics Command Center"
+        );
+        assert_eq!(name(Some(r"C:\x\tool"), Some("")), "tool");
+    }
+
+    #[test]
+    fn a_description_the_font_cannot_draw_gives_way_to_the_file_name() {
+        let rules = Rules::builtin();
+        let name = |p, d| tenant_name(&named(p, d), &rules);
+        // A Russian Windows: Task Manager and Notepad.
+        assert_eq!(
+            name(
+                Some(r"C:\Windows\System32\Taskmgr.exe"),
+                Some("Диспетчер задач")
+            ),
+            "Taskmgr"
+        );
+        assert_eq!(name(Some(r"C:\x\notepad.exe"), Some("Блокнот")), "notepad");
+        // Czech and German read fine: accents fold onto their letters.
+        assert_eq!(
+            name(Some(r"C:\x\Taskmgr.exe"), Some("Správce úloh")),
+            "Správce úloh"
+        );
+        // Neither reads: the description stays, as the more telling one.
+        assert_eq!(
+            name(Some(r"C:\x\记事本.exe"), Some("记事本 应用")),
+            "记事本 应用"
+        );
+        // Mostly readable is readable.
+        assert_eq!(
+            name(Some(r"C:\x\a.exe"), Some("WeChat 微信")),
+            "WeChat 微信"
+        );
+    }
+}

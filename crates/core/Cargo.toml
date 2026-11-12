@@ -1,0 +1,16 @@
+[package]
+name = "ramlord-core"
+description = "RAMlord's pure core: memory snapshots in, pixels out. No OS calls."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+png.workspace = true

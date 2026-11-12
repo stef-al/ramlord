@@ -1,0 +1,60 @@
+# How processes become tenants (SPEC.md, "From processes to tenants").
+# These lists are a starting point; grow them from real snapshots.
+
+staff = ["explorer.exe", "dwm.exe", "sihost.exe", "ctfmon.exe", "taskhostw.exe",
+  "runtimebroker.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
+  "searchhost.exe", "textinputhost.exe", "applicationframehost.exe", "dllhost.exe",
+  "backgroundtaskhost.exe", "fontdrvhost.exe", "securityhealthsystray.exe",
+  "smartscreen.exe", "lockapp.exe"]
+
+launchers = ["cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe", "wsl.exe",
+  "bash.exe", "steam.exe", "epicgameslauncher.exe", "galaxyclient.exe",
+  "battle.net.exe", "eadesktop.exe", "upc.exe", "riotclientservices.exe"]
+
+# A tenant without an entry in [names] is named after its FileDescription,
+# without a leading company word from this list ("Microsoft Teams" is
+# "Teams"). The word is kept when it is the whole description.
+companies = ["adobe", "amd", "apple", "asus", "brave", "dell", "google", "hp", "intel",
+  "lenovo", "logitech", "microsoft", "mozilla", "nvidia", "opera", "oracle", "realtek",
+  "valve"]
+
+# Virtual machine hosts. vmmem holds a virtual machine's memory (WSL,
+# Hyper-V, Windows Sandbox and other containers); br-uxendm.exe holds HP
+# Sure Click's micro-VMs. They run in session 0 and cannot be opened, but
+# that memory is a guest's, so each is a tenant. A guest's memory is
+# mapped into the host rather than private to it, so a VM host's rent
+# counts its shared working set too: once per tenant, the largest among
+# its hosts, since a micro-VM maps its template's pages.
+vm_hosts = ["vmmem", "vmmemcmzygote", "vmmemcmfirstboot", "vmmemwsa", "br-uxendm.exe"]
+
+# The Memory Compression process holds tenants' pages, compressed: the
+# boxes in the basement. Its working set is shown apart from Staff.
+compression = ["memcompression", "memory compression"]
+
+[helpers]
+"msedgewebview2.exe" = "parent"
+"crashpad_handler.exe" = "parent"
+"conhost.exe" = "parent"
+"openconsole.exe" = "parent"
+"steamwebhelper.exe" = "steam.exe"
+"steamservice.exe" = "steam.exe"
+"gameoverlayui.exe" = "steam.exe"
+"brhostsvr.exe" = "br-uxendm.exe"
+
+[names]
+"chrome.exe" = "Chrome"
+"msedge.exe" = "Edge"
+"firefox.exe" = "Firefox"
+"code.exe" = "VS Code"
+"ms-teams.exe" = "Teams"
+"discord.exe" = "Discord"
+"slack.exe" = "Slack"
+"spotify.exe" = "Spotify"
+"steam.exe" = "Steam"
+"onedrive.exe" = "OneDrive"
+"windowsterminal.exe" = "Terminal"
+"vmmem" = "Virtual machine"
+"vmmemcmzygote" = "Sandbox"
+"vmmemcmfirstboot" = "Sandbox"
+"vmmemwsa" = "Android"
+"br-uxendm.exe" = "Sure Click"

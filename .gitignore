@@ -1,0 +1,4 @@
+/target
+# Wine prefix and build output from scripts/wine-demo.sh
+/scripts/prefix/
+*.exe

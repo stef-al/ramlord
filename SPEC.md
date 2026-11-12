@@ -159,14 +159,14 @@ A tenant is one app, and its rent is the private memory it holds in RAM right no
 
 | Number | Source on Windows | Used for |
 | --- | --- | --- |
-| Rent bytes | `PrivateWorkingSetSize` from `GetProcessMemoryInfo` with `PROCESS_MEMORY_COUNTERS_EX2`, summed over the tenant's processes | Units and rent |
-| Lease bytes | `PagefileUsage` (commit charge) from the same call | Details card only |
+| Rent bytes | The private working set of each process, from the process list (`NtQuerySystemInformation`, see "After M4"), summed over the tenant's processes | Units and rent |
+| Lease bytes | `PagefileUsage` (commit charge) from the same list | Details card only |
 | Capacity | `GetPhysicallyInstalledSystemMemory`. If it fails or reports less than `PhysicalTotal` from `GetPerformanceInfo`, use `PhysicalTotal` | Building size |
 | Vacant | `PhysicalAvailable` from `GetPerformanceInfo`, times `PageSize` | Vacancy |
 | Commit used and limit | `CommitTotal` and `CommitLimit` from the same call | The "building full" alert |
 | Staff bytes | Capacity minus vacant minus all tenants' rent | Staff units |
 
-- `PrivateWorkingSetSize` needs Windows 10 22H2 or Windows 11 22H2 with the September 2023 update ([Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex2)). When the call fails, or every process reports 0 there, use `WorkingSetSize`, set `rent_is_estimate` and prefix amounts with `~`. Wine behaves this way.
+- The process list reports the private working set on every Windows 10 and 11. When every process reports 0 there, use the working set, set `rent_is_estimate` and prefix amounts with `~`. Wine behaves this way. `--self-test` checks RAMlord's own memory budget with `PrivateWorkingSetSize` from `GetProcessMemoryInfo` and `PROCESS_MEMORY_COUNTERS_EX2` ([Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex2)), or with the working set where Windows is too old for that structure.
 - Task Manager's Memory column is the private working set, and its Commit size column is what this spec calls the lease ([Pavel Yosifovich](https://scorpiosoftware.net/2023/04/12/memory-information-in-task-manager/)).
 - Installed memory includes what the hardware reserves, so that part counts as Staff. If rent plus vacant ever exceeds capacity, Staff is zero and Vacant shrinks until the three sum to capacity.
 - Rent in money is bytes divided by 2^30, times the price per GB. Show whole dollars, and cents under $1.
@@ -225,6 +225,7 @@ These lists are a starting point; grow them from real snapshots. A tenant's name
 | Leaker | LEAK | Holds at least 500 MB and grew at least 50% over the last 60 watched minutes, rising in at least 10 of the 12 five-minute buckets. Clears when rent falls 20% below its peak |
 | Family | none | Marked by the user; never flagged and never suggested for eviction |
 
+- A tenant's counters belong to one run of it. The run goes on while its oldest process is the same, or while any of its processes was its own one sample ago (the oldest of several may leave); otherwise it has restarted and starts over.
 - Sign-in time is the start time of the oldest process in the user's session.
 - Focus: once a second, credit the tenant that owns the foreground window (`GetForegroundWindow`, `GetWindowThreadProcessId`).
 - Visible window: every 5 seconds, `EnumWindows` for windows that are visible, not cloaked, not tool windows and larger than zero.
@@ -246,10 +247,12 @@ Besides drawing the tower, the app shows a details card, evicts on request, spea
 1. Evict is offered on the details card and on the Delete key. Staff, Family and RAMlord itself cannot be evicted.
 2. Confirm once: "Close NAME? Unsaved work may be lost if it does not ask first."
 3. Polite phase: post `WM_CLOSE` to every visible top-level window of the tenant, then wait up to 5 seconds for its processes to exit.
-4. If any remain, say "NAME refuses to leave" and offer Force evict or Leave it. Force evict calls `TerminateProcess` on each remaining process.
+4. If any remain, say "NAME refuses to leave" and offer Force evict or Leave it. Force evict calls `TerminateProcess` on each process the tenant has at that moment: the user may answer much later, and the processes of when it was asked may be gone.
 5. A tenant in the walls has no window to ask, so it goes straight to the Force evict question.
 6. If Windows refuses because the app runs with higher rights, say "NAME has a lawyer. Close it yourself." and stop.
 7. Report what the next sample shows, for example "Evicted DISCORD. 2.9 GB vacated." Never promise freed memory in advance.
+8. A process is named by its id and its start time together. Windows hands an id out again once its process has gone, so before `WM_CLOSE` or `TerminateProcess` the process is opened and its start time compared; one that does not match has left and is not touched, and one that cannot be checked is never acted on.
+9. A dialog whose tenant has left closes at the next sample: with the report of step 7 if the tenant had been asked to leave, silently if not.
 
 There is no bulk eviction, no elevation prompt and no automatic eviction.
 
@@ -321,6 +324,76 @@ Settings live in `%APPDATA%\RAMlord\settings.json`. State (hues, watched-time co
 
 **Timing.** Sample processes and memory every 2 seconds, or every 5 while the window is hidden. Sample focus every second and windows every 5 seconds. Redraw only when the scene changes, at most 10 frames a second.
 
+## After M4: what the owner added
+
+The owner asked for these after M4, from dumps of a 16 GB laptop whose Staff looked far too large. They extend the sections above; where they differ, this section wins. The tests pin each of them down.
+
+**Measured besides.** Two more sources, both documented and readable without administrator rights.
+
+| Number | Source on Windows | Used for |
+| --- | --- | --- |
+| Every process | `NtQuerySystemInformation(SystemProcessInformation)`: private working set, working set, commit, parent, session and create time for all processes, even those that cannot be opened | Rent, lease, Staff's services |
+| Compressed memory | The working set of the Memory Compression process | The boxes |
+| Graphics memory | Performance counters `GPU Adapter Memory(*)\Shared Usage` (all adapters) and `GPU Process Memory(*)\Shared Usage` per process | The gallery |
+| Staff's parts | Performance counters of the Memory object: Pool Paged Resident, System Cache Resident, System Driver Resident, System Code Resident, Modified Page List, the Standby Cache lists and Free & Zero Page List; `KernelNonpaged` from `GetPerformanceInfo` | The Staff card |
+| Kernel pools by tag | `NtQuerySystemInformation(SystemPoolTagInformation)`: paged and nonpaged bytes under each driver's four-character tag; `SystemModuleInformation` for the loaded drivers, whose files are searched for every tag; a tag in one file only counts for that driver | `--dump` only: the largest tags and the pools summed by driver |
+
+Counters are added by their English names (`PdhAddEnglishCounterW`), so every language of Windows answers. The memory counters are read at every sample, graphics memory every 5 seconds. A counter that is missing reads as 0. They are part of the snapshot contract and of `--dump`.
+
+**Five parts, not three.** The building is Staff, the tenants' rent, the gallery, the boxes and Vacant, and they sum to capacity.
+
+- **Boxes** are compressed memory: the Memory Compression process's working set. They sit first in fill order, in the basement.
+- **The gallery** is graphics memory in RAM, which no process's working set includes. On a PC with built-in graphics it can be gigabytes. Its size is the adapters' Shared Usage, which matches Task Manager's "Shared GPU memory". It comes after the boxes and before Staff.
+- Vacant is measured and comes first. The gallery comes out of what would be Staff, never out of Vacant. Staff is what is left.
+- Rule 3's fill order becomes: boxes, gallery, Staff, named tenants, Others, Vacant. Rule 5 does not apply to boxes and pictures: a share too small for a unit gets none.
+
+**Whose boxes and pictures.** Every box and picture has a holder: a named tenant, Others or Staff.
+
+- A process's graphics memory is its Shared Usage capped at its commit beyond its working set. Windows counts every surface a process can see, so the desktop compositor, which sees every window's, reports many times what it holds (11 GB on the owner's PC, against 2.7 GB in use). A process pays commit for the graphics memory it allocates and none for what it only sees. The estimates are fitted to the gallery.
+- The boxes are split by packed memory: commit beyond the working set and the pictures, the best estimate Windows allows of whose pages are compressed. Staff's processes have packed memory too.
+- A named tenant whose share is at least half a unit gets its own boxes or pictures, in its hue. Smaller shares and the merged tenants' are Others', in Others' gray. Staff's, and what no process claims, are plain cardboard and plain canvas, next to Staff.
+
+**VM hosts.** A process in `vm_hosts` (`vmmem`, Windows Sandbox's, Android's, HP Sure Click's `br-uxendm.exe`) is a tenant even in session 0. Its rent counts its shared working set too, because a guest's memory is mapped into the host, not private to it, and its lease is at least its rent: Windows does not charge a guest's memory to the host's commit. A VM host's processes are one tenant by image name, opened or not. A micro-VM maps its template's memory copy-on-write, so the same pages sit in both processes' working sets: the tenant's rent is its processes' private working sets plus the largest shared working set among its VM hosts, once. On the owner's PC that is Sure Click's 1,187 MiB template against a micro-VM with 384 MiB private, 1,042 MiB shared and 1,665 MiB committed (a copy-on-write view is committed in full). A later dump confirmed it: every page of the micro-VM's 1,034 MiB shared working set was mapped by another process too. `--dump` measures how much of each VM host's working set other processes map too, where Windows lets it read the page list.
+
+**Processes that cannot be opened.** The process list names every process, but one RAMlord cannot open is Staff, as rule 1 says, whatever its name.
+
+**Clicking.** Every unit, box and picture can be clicked. A tenant's opens its details card. Staff's open the Staff card and Others' the Others card; so do the STAFF and OTHERS lines of the rent roll. What is selected is outlined everywhere it lives: its units, its boxes and its pictures. A tenant merged into Others lights up Others.
+
+**The details card's lease.** LEASE is drawn as a bar and broken down: IN RAM (the rent), its GALLERY pictures, its estimated share of the BOXES, and the rest ON PAPER, leased but in the page file or never touched. An app that reserves 1.5 GB and uses 0.3 GB shows a mostly empty bar. GALLERY and BOXES read `-` when the building has none. The name and rent share the top line.
+
+**The Staff card.** It lists what Staff is made of: services (Staff processes' private memory), kernel pools in RAM, drivers and kernel code in RAM, the file cache in RAM, pages waiting to be written to disk, memory the hardware reserves, and SHARED, OTHER for the rest. The parts always sum to Staff: each measured part is cut to what the ones before it leave (services first, then the hardware's share, which is known exactly, then the others in the order shown), and SHARED, OTHER is what remains. Below come Staff's own pictures and boxes. Esc or Back closes it.
+
+**The Others card.** It lists everyone the `OTHERS (n)` line sums, largest first, 13 to a page, with MORE to turn pages. A row opens that app's details card with all its actions; Back or Esc returns to the list. Up and Down move along the list, Enter opens, Delete asks to evict.
+
+**Decided in M5.** Where the sections above leave a choice open:
+
+- The panel's price line marks an estimated price with `~` (`LPDDR5 ~$14.34/GB  NOV 3`), which fits its 24 characters. The card writes `EST.`.
+- An unknown memory type is billed as DDR4, estimated, under the label `RAM`. The landlord asks once: "What RAM is this? Pick its type in settings: F3."
+- A typed price reads an amount with up to two decimals (point or comma) and a symbol of one to three characters before or after it, such as `€5.20`, `5,20 €` or `130 Kč`. The symbol is always shown before amounts. An empty entry goes back to the price file. A custom price's date is the day it was typed.
+- The card always lists up to ten tenants, even when the panel lists fewer to make room for BOXES and GALLERY.
+- Replies to the user, such as an eviction's report or "Rent roll saved to Pictures and copied.", take the remark line at once and stay 20 seconds.
+- Without a tray icon (no notification area), the close button quits, so RAMlord can always be reached.
+
+**Decided in M6.**
+
+- The app icon is the tower in two drawings, 16 and 32 pixels, enlarged by whole numbers to 48, 64 and 256 so the pixels stay square; 256 is stored as a PNG. `fixtures/golden/app-icon.png` pins it.
+- The exe's version block names RAMlord (FileDescription and ProductName), its version and GPL-3.0-only. Task Manager and Explorer show these.
+- The core writes the resources as bytes, and the build script links them: a `.res` file for MSVC, a COFF object for MinGW. No resource compiler and no new crate.
+- `release.yml` publishes from `main` only, when the version has no tag and is not 0.0.0. On other branches it rehearses the same build, tests, golden comparison, self-test and hash, and uploads them as an artifact, whenever `Cargo.toml`, the release files or the resources change.
+- A release has `ramlord.exe` and `ramlord.exe.sha256` (the hash, two spaces, the name: what `sha256sum -c` reads). Its notes give the hash and a PowerShell line that prints `True` when the download matches.
+
+**Decided in the revision after M6.** A read-through of the whole repository; the tests named in the commits pin each of these.
+
+- Paths and names in any script are handled: nothing reads a path at a byte position. A FileDescription the Latin font cannot draw (a Russian Windows calls Task Manager "Диспетчер задач") gives way to the file's name when at least half of that draws.
+- `settings.json` is read key by key. A value that does not fit keeps its default without costing the others; a scale outside 2 to 5 is automatic, the away threshold stays within 1 hour to 7 days, and a custom price the building could not be billed at (zero, no symbol, no date) is dropped.
+- Each process is opened once in its life, not at every sample: its path and owner never change, and the process list's start time tells it from a later process with its id.
+- The Run value follows the exe: when RAMlord starts and its value names another path, the value is rewritten. State is also saved when Windows shuts down or the user signs out.
+- The card on the clipboard is a 24-bit bitmap. A 32-bit one has a spare byte per pixel that some programs read as transparency. When another program holds the clipboard, F2 tries for a third of a second and then says "Rent roll saved to Pictures. The clipboard was busy."
+- Typographic quotes, dashes, the ellipsis and no-break spaces draw as their plain forms.
+- The price file is fetched through the proxy the system's settings give, with ten-second timeouts.
+
+**Remaining limits.** Windows says nothing more about SHARED, OTHER without administrator rights: shared program code and files, page tables, memory drivers lock. A process's graphics memory and its boxes are estimates, marked `~` where they are shown as amounts.
+
 ## Architecture
 
 All behavior lives in a pure core that turns a memory snapshot into pixels. A thin Windows layer feeds it and shows the result, so everything except that layer builds, runs and tests on Linux.
@@ -381,7 +454,10 @@ docs/reference/         reference renders, the Python prototype, its drafts
 | `scene` | Building, layout and UI state | A draw list and click regions for the tower, rent roll, details and settings |
 | `render` | A draw list | A 384 by 240 frame; also draws the rent roll card |
 | `remarks` | A Building and its history | The landlord's one line |
-| `prices`, `smbios` | Bytes | A price table and a memory type |
+| `ui` | Clicks, keys and reports from the Windows layer | The selection, the open card and the eviction state machine; commands for the Windows layer |
+| `live` | One snapshot after another | The whole pipeline, sample by sample: the frame on screen |
+| `prices`, `smbios`, `settings` | Bytes and files | A price table, a memory type, the settings |
+| `resources`, `pools` | The drawn icon; Windows' pool tag list | The exe's icon and version resources; kernel pools by driver for `--dump` |
 
 Three rules keep the core testable:
 
@@ -402,6 +478,11 @@ pub struct Snapshot {
     pub foreground_pid: Option<u32>,
     pub rent_is_estimate: bool,      // true when the private working set is unavailable
     pub processes: Vec<Process>,
+    // Added after M4, all 0 or empty when unknown: Windows' own counters
+    // for the Staff card and the gallery (physical_total_bytes, the kernel
+    // pools, file cache, drivers, the modified, standby and free lists,
+    // gpu_shared_bytes), and for `--dump` alone the kernel pool tags
+    // (pool_tags, pool_drivers).
 }
 
 pub struct Process {
@@ -410,24 +491,30 @@ pub struct Process {
     pub started_at_ms: u64,
     pub session: u32,
     pub image_path: Option<String>,  // None when the process cannot be opened
+    pub image_name: Option<String>,  // from the process list, even when it cannot
     pub description: Option<String>, // FileDescription of the image
     pub rent_bytes: u64,             // private working set
     pub lease_bytes: u64,            // commit charge
+    pub working_set_bytes: u64,      // shared pages included
+    pub gpu_shared_bytes: u64,       // graphics memory in RAM it can see
+    pub gpu_dedicated_bytes: u64,    // on a graphics card: for diagnosis
     pub has_visible_window: bool,
     pub is_self: bool,
 }
 ```
 
-A snapshot never holds window titles, command lines or user names. `--dump` replaces the user's profile folder in paths with `%USERPROFILE%`, so dumps from real PCs are safe to commit as fixtures.
+`crates/core/src/snapshot.rs` has every field with its meaning. Fields added later default to zero or empty, so older fixtures still read.
+
+A snapshot never holds window titles, command lines or user names, and `--dump` replaces the user's profile folder in paths with `%USERPROFILE%`. A dump still names every program and driver on the PC, security tools included, so its owner reads it before sharing it, and it becomes a fixture only if they say so.
 
 **The Windows layer.** It lives in `crates/app/src/win/` and calls Win32 directly through Microsoft's `windows` crate. `unsafe` is allowed only there.
 
 | Part | Does | Main calls, beyond those named earlier |
 | --- | --- | --- |
-| `provider` | Builds a Snapshot | `CreateToolhelp32Snapshot`, `OpenProcess`, `QueryFullProcessImageNameW`, `GetProcessTimes`, `ProcessIdToSessionId`, `GetFileVersionInfoW` |
-| `shell` | Window, input, tray, single instance | `CreateWindowExW`, `StretchDIBits` with `COLORONCOLOR`, `Shell_NotifyIconW`, per-monitor DPI awareness v2, a named mutex |
-| `evict` | Polite close, then force | `PostMessageW` with `WM_CLOSE`, `TerminateProcess` |
-| `extras` | Clipboard, price fetch, autostart, settings link | `SetClipboardData` with `CF_DIB`, WinHTTP, the per-user Run key, `ShellExecuteW` |
+| `provider`, `counters` | Build a Snapshot | `NtQuerySystemInformation` for the process list; `OpenProcess`, `QueryFullProcessImageNameW`, the token's user and `GetFileVersionInfoW` once per process; `EnumWindows`; performance counters through `pdh.dll` |
+| `shell`, `tray`, `instance` | Window, input, tray, single instance | `CreateWindowExW`, `StretchDIBits` with `COLORONCOLOR`, `Shell_NotifyIconW`, per-monitor DPI awareness v2, a named mutex |
+| `evict` | Polite close, then force | `OpenProcess` and `GetProcessTimes` to check each process, `PostMessageW` with `WM_CLOSE`, `TerminateProcess` |
+| `extras` | Memory type, clipboard, price fetch, autostart | `GetSystemFirmwareTable`, `SetClipboardData` with `CF_DIB`, WinHTTP, the per-user Run key |
 
 On Linux the exe has no window. It only renders files from fixtures.
 

@@ -1,0 +1,31 @@
+# Evidence
+
+Screenshots and outputs that back a milestone's "done when" boxes.
+
+| File | What it shows |
+| --- | --- |
+| `m1-wine-demo.png` | Rung 4 for M1: `ramlord --demo`, built with MinGW, running under Wine 9.0 and Xvfb (1920 by 1080, no window manager, so no title bar). The window's client area at (3, 29) is `fixtures/golden/sample-tower.png` pixel for pixel. Made with `scripts/wine-demo.sh`; the demo exited with code 0 on `WM_CLOSE`. |
+| `m2-wine-live.png` | Rung 4 for M2: the live app (`ramlord` with no arguments) under Wine 9.0 with Notepad and Minesweeper running. Wine reports no private working set, so rent is estimated and marked `~`; Wine's own processes are Staff, and the two small apps merge into Others. Made with `WINE_ALSO="notepad winemine" scripts/wine-run.sh`; the app exited with code 0 on `WM_CLOSE`. |
+| `m2-wine-dump.json` | `ramlord --dump` under Wine: 11 processes, `rent_is_estimate: true`, RAMlord found as `is_self`. |
+| `m2-wine-self-test.json` | `ramlord --self-test` under Wine: every budget passes (exe 765 KB, own working set 19 MB, CPU 0.04% of the machine, slowest snapshot 32 ms, slowest frame 0.7 ms). |
+| `m3-flags.png` | Rung 2 for M3: four timeline frames at the moment their flags are on (`RAMLORD_PNG_DIR=dir cargo test -p ramlord-core --test flags`). Top left, AWAY: VIEWER's units have dark windows. Top right, SQUAT. Bottom left, WALLS. Bottom right, a full building: the remark, LEAK with its arrow, WALLS with vent dots, and the largest tenant outlined in gold. |
+| `m3-wine-live.png` | The live app under Wine with the landlord's remark ("Half the building is empty"). |
+| `m3-wine-state.json` | The `state.json` the app wrote to `%APPDATA%\RAMlord\` under Wine when its window was closed. |
+| `m4-details.png` | Rung 2 for M4: Chrome's details card on the desk snapshot, opened with Down and Enter (`RAMLORD_PNG_DIR=dir cargo test -p ramlord-core --test input`): flags in words, lease, peak, packed, processes, the last hour, and the Evict, Family and Back buttons. |
+| `m4-wine-details.png`, `m4-wine-confirm.png`, `m4-wine-asking.png`, `m4-wine-evicted.png` | Rung 4 for M4, the polite path: the live app under Wine with Notepad holding a 24 MB file, so it has its own row. A click on the row opens the card, Delete asks, Enter posts `WM_CLOSE`. Notepad exits; the next sample closes the dialog and the landlord's remark says "Evicted NOTEPAD. 0.1 GB vacated." Made with `scripts/wine-evict.sh EXE DIR`. |
+| `m4-wine-refused.png`, `m4-wine-forced.png` | Rung 4 for M4, the forced path: Notepad has unsaved text and answers `WM_CLOSE` with its own "save the changes?" question, so after 5 seconds RAMlord says "NOTEPAD refuses to leave." Delete forces it out with `TerminateProcess`, and the remark reports it as above. Made with `scripts/wine-evict.sh EXE DIR force`. |
+| `m4-evicted.png` | The end of the key-driven eviction of Chrome on the desk snapshot (Down, Enter, Delete, Enter, then Delete at the refusal): the rent roll is back, Vacant has grown and the remark says "Evicted CHROME. 2.4 GB vacated." |
+| `staff-gallery-details.png` | After M4, at the owner's request: Chrome's card on `fixtures/snapshot-gallery.json` with the lease broken down (in RAM, its pictures in the gallery, its share of the boxes, on paper), and the gallery's framed pictures above the boxes. |
+| `staff-gallery-staff.png` | The Staff card on the same snapshot: Staff's parts from Windows' counters, which add up to Staff. |
+| `staff-gallery-wine.png` | The Staff card opened with a click on a Staff unit in the live app under Wine. Wine has none of the counters, so everything but SERVICES is SHARED, OTHER. |
+| `after-m4-holder-chrome.png` | A click on one of Chrome's boxes: Chrome's units, boxes and pictures are all outlined, and its card shows its lease broken down (`fixtures/snapshot-gallery.json`). |
+| `after-m4-holder-staff.png` | A click on one of Staff's pictures: the Staff card, with Staff's units, plain canvas pictures and cardboard box outlined, and Staff's own pictures and boxes below its parts. |
+| `after-m4-others-card.png` | The Others card on a PC with twenty small apps: 22 apps, 13 to a page, MORE 1/2; Others' units outlined in the tower. |
+| `after-m4-others-details.png` | A row of the Others card opens that app's details card, with Evict and Family; Back returns to the list. |
+| `m5-wine-settings.png` | Rung 4 for M5: F3 in the live app under Wine. Wine reports no memory type, so it reads AUTO ? and the landlord asks for it. Made with `scripts/wine-m5.sh`. |
+| `m5-wine-card-saved.png` | F2 under Wine: the remark says the card was saved to Pictures and copied. |
+| `m5-wine-card.png` | The PNG F2 wrote to `Pictures\RAMlord\` under Wine, 960 by 1200. The same run found it on the clipboard as an image, a second start left one window, and WM_CLOSE hid the window to the tray until a second start showed it again. |
+| `m5-custom-price.png`, `m5-card-euro.png` | A custom price of EUR 5.20 typed on the settings screen (`tests/prices_settings.rs`): every amount on screen and on the card changes to it. |
+| `m5-tray-icons.png` | The tray icon at 8 times scale: 30% occupied, and full (red). |
+| `m6-app-icon.png` | The app icon (M6): the 32 and 16 pixel drawings at 8 times, the 256 pixel image as stored, and 16 and 32 at their real size on the right. `fixtures/golden/app-icon.png` pins the 256. |
+| `m6-wine-run.png` | Rung 4 for M6: the MinGW exe with its icon and version resources linked in (`objdump -p` lists them) starts, paints and exits 0 under Wine. Xvfb has no window manager, so no title bar shows the icon. |

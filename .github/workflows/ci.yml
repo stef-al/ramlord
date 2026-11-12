@@ -1,0 +1,138 @@
+name: ci
+
+# Every push to every branch: no pull request exists yet when Claude first pushes.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  linux:
+    name: linux (rungs 1 and 3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy --target x86_64-pc-windows-gnu
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo fmt --check
+        run: .github/scripts/step.sh cargo fmt --all --check
+
+      - name: cargo clippy
+        run: .github/scripts/step.sh cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: .github/scripts/step.sh cargo test --workspace --locked
+
+      - name: cargo check, Windows target
+        run: .github/scripts/step.sh cargo check --workspace --all-targets --locked --target x86_64-pc-windows-gnu
+
+      - name: cargo clippy, Windows target
+        run: .github/scripts/step.sh cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings
+
+  windows:
+    name: windows (rung 5)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo build --release
+        run: .github/scripts/step.sh cargo build --release --locked
+
+      - name: cargo test
+        run: .github/scripts/step.sh cargo test --workspace --locked
+
+      - name: The exe's icon and version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          ./.github/scripts/exe-resources.ps1 target/release/ramlord.exe $version
+
+      - name: Render the sample building with the release exe
+        run: |
+          mkdir -p out
+          .github/scripts/step.sh target/release/ramlord.exe --building fixtures/sample-building.json \
+            --render out/sample-tower.png --card out/sample-rent-roll.png
+
+      - name: Same pixels as Linux
+        run: |
+          .github/scripts/step.sh cmp out/sample-tower.png fixtures/golden/sample-tower.png
+          .github/scripts/step.sh cmp out/sample-rent-roll.png fixtures/golden/sample-rent-roll.png
+          echo "::notice title=Golden images::the Windows exe drew both PNGs byte for byte as the Linux golden images"
+
+      - name: Self-test (budgets)
+        run: |
+          # The exe is a GUI program: it reports through the JSON file and its
+          # exit code. Show the report so a failure annotation carries it.
+          .github/scripts/step.sh bash -c 'target/release/ramlord.exe --self-test out/self-test.json; code=$?; cat out/self-test.json; exit $code'
+
+      - name: Report the budgets
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path out/self-test.json) {
+            $report = Get-Content out/self-test.json -Raw | ConvertFrom-Json
+            foreach ($b in $report.budgets) {
+              $verdict = if ($b.pass) { "pass" } else { "FAIL" }
+              Write-Output "::notice title=Budget: $($b.name)::$($b.value) of $($b.limit) $($b.unit) ($verdict)"
+            }
+            Write-Output "::notice title=Self-test::$($report.samples) samples, $($report.processes) processes, $($report.tenants) tenants, snapshots (us): $($report.snapshot_us -join ' '), frames (us): $($report.frame_us -join ' '), estimate: $($report.rent_is_estimate)"
+          }
+
+      - name: Dump a live snapshot
+        run: .github/scripts/step.sh target/release/ramlord.exe --dump out/dump.json
+
+      - name: Check the dump
+        run: RAMLORD_DUMP=out/dump.json .github/scripts/step.sh cargo test -p ramlord-core --test live_dump --locked -- --nocapture
+
+      - name: Render the dump
+        run: |
+          .github/scripts/step.sh target/release/ramlord.exe --snapshot out/dump.json \
+            --render out/dump-tower.png --card out/dump-rent-roll.png
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ramlord-windows
+          path: |
+            target/release/ramlord.exe
+            out/*.png
+            out/*.json
+          if-no-files-found: warn
