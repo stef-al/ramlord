@@ -448,8 +448,9 @@ pub struct Lease {
 }
 
 impl Lease {
-    /// Until M5 detects the memory type and reads the price file, a live
-    /// building says RAM at the DDR5 price; remarks come with M3.
+    /// RAM at the DDR5 price, without a remark: what `--snapshot` and
+    /// `--self-test` bill at, and what a live building starts from until
+    /// `Live::configure` gives it its settings and prices.
     pub fn placeholder() -> Lease {
         Lease {
             memory_type: "RAM".into(),

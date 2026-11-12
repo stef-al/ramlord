@@ -39,7 +39,7 @@ impl IconImage {
         }
     }
 
-    /// What an .ico file or an RT_ICON resource holds for this image.
+    /// What an RT_ICON resource holds for this image.
     fn data(&self) -> Vec<u8> {
         match self {
             IconImage::Pixels(frame) => dib(frame),
@@ -99,29 +99,6 @@ fn dib(frame: &Frame) -> Vec<u8> {
 /// The width or height byte of an icon directory entry: 0 means 256.
 fn size_byte(size: u32) -> u8 {
     if size >= 256 { 0 } else { size as u8 }
-}
-
-/// An .ico file of `images`.
-pub fn ico_file(images: &[IconImage]) -> Vec<u8> {
-    let data: Vec<Vec<u8>> = images.iter().map(IconImage::data).collect();
-    let mut out = Vec::new();
-    for value in [0u16, 1, images.len() as u16] {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    let mut offset = 6 + 16 * images.len() as u32;
-    for (image, bytes) in images.iter().zip(&data) {
-        let size = size_byte(image.size());
-        out.extend_from_slice(&[size, size, 0, 0]);
-        out.extend_from_slice(&1u16.to_le_bytes());
-        out.extend_from_slice(&32u16.to_le_bytes());
-        out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-        out.extend_from_slice(&offset.to_le_bytes());
-        offset += bytes.len() as u32;
-    }
-    for bytes in &data {
-        out.extend_from_slice(bytes);
-    }
-    out
 }
 
 /// The RT_GROUP_ICON data: an .ico directory whose entries name RT_ICON

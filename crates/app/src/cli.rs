@@ -5,8 +5,8 @@ use std::path::PathBuf;
 /// What the exe was asked to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    /// `ramlord`: run the app. `--minimized` starts it minimized (the tray
-    /// comes with M5).
+    /// `ramlord`: run the app. `--minimized` starts it hidden in the tray,
+    /// as the Run key does at sign-in.
     Run { minimized: bool },
     /// `--demo`: run the app on the sample building.
     Demo,
@@ -59,7 +59,7 @@ impl std::fmt::Display for UsageError {
 pub const USAGE: &str = "\
 usage:
   ramlord                                   run the app (Windows)
-  ramlord --minimized                       start minimized (Windows)
+  ramlord --minimized                       start hidden in the tray (Windows)
   ramlord --demo                            run the app on the sample building (Windows)
   ramlord --building FILE --render OUT.png  draw one tower frame from a Building file
   ramlord --building FILE --card OUT.png    draw the rent roll card

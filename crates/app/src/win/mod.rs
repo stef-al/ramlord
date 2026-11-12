@@ -6,7 +6,12 @@
 //!   counters for it (memory lists, kernel parts, graphics memory).
 //! - `shell` is the window: whole-number scaling, the 2 second sampling
 //!   loop, redraws only when the scene changes, clicks and keys.
-//! - `evict` closes and, when asked, terminates a tenant's processes.
+//! - `tray` is the icon in the notification area and its menu;
+//!   `instance` keeps a second copy from running.
+//! - `evict` closes and, when asked, terminates a tenant's processes,
+//!   each checked by its start time first.
+//! - `extras` has the small calls: the memory type from the firmware, the
+//!   price file over WinHTTP, the Run key, the clipboard and Pictures.
 
 pub mod counters;
 pub mod evict;

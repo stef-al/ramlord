@@ -73,7 +73,9 @@ RAMLORD_PNG_DIR=/some/dir cargo test -p ramlord-core --test input
 Clicks and keys go through `ramlord_core::ui`: `scene::window` returns
 the click regions with the draw list, `Ui::input` turns a click or key into
 `Command`s for the Windows layer, and eviction is the `Eviction` state
-machine. `crates/app/src/win/evict.rs` only carries the commands out.
+machine. `crates/app/src/win/evict.rs` only carries the commands out: a
+command names each process by id and start time (`ui::ProcessKey`), and
+`evict.rs` acts only on a process whose start time matches.
 
 SPEC.md's section "After M4: what the owner added" covers the boxes, the
 gallery (graphics memory; a process's share is its Shared Usage capped at
@@ -144,6 +146,14 @@ mode not available on this platform, 6 when the window fails and 7 when
   either file.
 - Eviction never happens without the user: one confirmation, a polite
   `WM_CLOSE` first, and Esc in any dialog changes nothing. Keep it that way.
+  A process id alone never names a process to act on: Windows reuses ids.
+- Paths, names and anything else from the PC may be in any script. Never
+  slice such a string at a byte position (`&s[..n]`): it panics inside a
+  multi-byte character, and the release build aborts on a panic. Split on
+  characters, or compare bytes.
+- Files a person may edit are read leniently: `Settings::from_json` takes
+  each key on its own and `Settings::sanitized` brings values into range,
+  so no content of `settings.json` can stop the app.
 
 ## The six verification rungs
 
@@ -166,8 +176,9 @@ WINEPREFIX=$PWD/scripts/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
   scripts/wine-run.sh target/x86_64-pc-windows-gnu/release/ramlord.exe shot.png
 ```
 
-The settings screen, F2's card in Pictures and on the clipboard, close to
-the tray and a second start (M5). It needs `xdotool` and `xclip`:
+The settings screen, F2's card in Pictures and on the clipboard (compared
+with the saved PNG pixel for pixel), close to the tray and a second start
+(M5). It needs `xdotool` and `xclip`:
 
 ```bash
 WINEPREFIX=$PWD/scripts/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \

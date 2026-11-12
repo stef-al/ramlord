@@ -579,10 +579,9 @@ fn building_scene(
     d.push(Draw::text(12, 230, cut(&building.remark, REMARK_MAX), TEXT));
 }
 
-/// Outlines every edge between `owner`'s units and anyone else's, on the
-/// lines where the dark owner outline runs.
-/// Outlines every cell `holder` has: its units, its boxes and its
-/// pictures, each group on its own.
+/// Outlines every cell `holder` has (its units, its boxes and its
+/// pictures, each group on its own), on the lines where the dark outline
+/// between owners runs.
 fn outline_holder(d: &mut Vec<Draw>, layout: &Layout, holder: Holder, color: Rgb) {
     let ours = |k: usize| layout.cells[k].holder() == Some(holder);
     for index in (0..layout.cells.len()).filter(|&k| ours(k)) {

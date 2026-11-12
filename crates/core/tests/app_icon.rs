@@ -1,8 +1,8 @@
 //! The app icon and the exe's resources (SPEC.md, M6). The icon is drawn
 //! like everything else, and its pixels are pinned by
 //! `fixtures/golden/app-icon.png` (256 pixels). The resource bytes are
-//! read back here the way Windows reads them: the .ico directory, the
-//! `.res` entries, and the COFF object's resource tree and relocations.
+//! read back here the way Windows reads them: the icon images, the `.res`
+//! entries, and the COFF object's resource tree and relocations.
 //!
 //! With `RAMLORD_PNG_DIR` set, writes `app-icon.png` (256) and
 //! `app-icon-16.png` and `app-icon-32.png` there, enlarged to look at.
@@ -109,20 +109,14 @@ fn the_icon_matches_golden_pixel_for_pixel() {
 }
 
 #[test]
-fn the_ico_file_lists_each_image_with_its_bytes() {
-    let images = images();
-    let ico = resources::ico_file(&images);
-    assert_eq!(
-        (u16_at(&ico, 0), u16_at(&ico, 2), u16_at(&ico, 4)),
-        (0, 1, 5)
-    );
+fn each_icon_image_is_a_dib_with_its_mask_or_a_png() {
+    let all = all();
     for (k, size) in APP_ICON_SIZES.iter().enumerate() {
-        let e = 6 + 16 * k;
-        let byte = if *size == 256 { 0 } else { *size as u8 };
-        assert_eq!((ico[e], ico[e + 1]), (byte, byte));
-        assert_eq!((u16_at(&ico, e + 4), u16_at(&ico, e + 6)), (1, 32));
-        let (len, at) = (u32_at(&ico, e + 8) as usize, u32_at(&ico, e + 12) as usize);
-        let data = &ico[at..at + len];
+        let icon = all
+            .iter()
+            .find(|r| r.kind == RT_ICON && r.id == k as u16 + 1)
+            .expect("an image per size");
+        let data = &icon.data;
         if *size == 256 {
             assert_eq!(&data[1..4], b"PNG");
         } else {
@@ -131,7 +125,10 @@ fn the_ico_file_lists_each_image_with_its_bytes() {
             assert_eq!((u32_at(data, 4), u32_at(data, 8)), (*size, 2 * size));
             assert_eq!(u16_at(data, 14), 32);
             let row = (*size as usize).div_ceil(32) * 4;
-            assert_eq!(len, 40 + (size * size * 4) as usize + row * *size as usize);
+            assert_eq!(
+                data.len(),
+                40 + (size * size * 4) as usize + row * *size as usize
+            );
             // The bottom-left pixel is transparent: alpha 0 in the first
             // row of colour (bottom-up), and set in the mask.
             assert_eq!(data[40 + 3], 0);

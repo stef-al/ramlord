@@ -60,7 +60,8 @@ and LEAK an app whose memory keeps growing.
   memory in RAM, working set, commit), parent, session and start time, as
   Task Manager reads them.
 - **Your apps.** For processes in your session: the path of the program, the
-  description inside its exe file, and whether it runs as you.
+  description inside its exe file, and whether it runs as you. Each process
+  is looked at once, when it first appears.
 - **Windows.** Which window has focus, once a second, and which windows are
   visible, every 5 seconds. Never their titles or contents.
 - **Memory totals.** Installed and available memory, commit, and Windows'
@@ -86,7 +87,9 @@ and LEAK an app whose memory keeps growing.
 
 - It never asks for administrator rights and never changes Windows settings.
 - It never closes an app without your confirmation, never closes several at
-  once and never closes anything on its own.
+  once and never closes anything on its own. Before it closes a process it
+  checks that it is still the one you chose, not a newer one that got the
+  same process number.
 - It never reads window titles, command lines, your files or what is inside
   another program's memory.
 - It never switches other apps' startup entries; for a squatter it opens

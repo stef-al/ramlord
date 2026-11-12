@@ -22,8 +22,9 @@ companies = ["adobe", "amd", "apple", "asus", "brave", "dell", "google", "hp", "
 # Hyper-V, Windows Sandbox and other containers); br-uxendm.exe holds HP
 # Sure Click's micro-VMs. They run in session 0 and cannot be opened, but
 # that memory is a guest's, so each is a tenant. A guest's memory is
-# mapped into the host rather than private to it, so a VM host's rent is
-# its whole working set.
+# mapped into the host rather than private to it, so a VM host's rent
+# counts its shared working set too: once per tenant, the largest among
+# its hosts, since a micro-VM maps its template's pages.
 vm_hosts = ["vmmem", "vmmemcmzygote", "vmmemcmfirstboot", "vmmemwsa", "br-uxendm.exe"]
 
 # The Memory Compression process holds tenants' pages, compressed: the

@@ -152,8 +152,8 @@ pub struct Price {
 }
 
 impl Price {
-    /// The DDR5 price from `prices.json`, used for live buildings until M5
-    /// reads the price file and detects the memory type.
+    /// The DDR5 price from `prices.json`: what `--snapshot` and
+    /// `--self-test` bill at. The live app bills by `prices::lease`.
     pub fn placeholder() -> Price {
         Price {
             per_gb_micros: 14_340_000,
@@ -216,7 +216,8 @@ pub enum BuildingError {
     },
     ZeroCapacity,
     ZeroPrice,
-    /// Staff, rent and Vacant must sum to capacity.
+    /// Staff, rent, the gallery, the boxes and Vacant must sum to
+    /// capacity.
     Unbalanced {
         capacity: u64,
         sum: u128,

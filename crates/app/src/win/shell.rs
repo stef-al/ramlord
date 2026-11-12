@@ -45,13 +45,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetMessageW, IDC_ARROW, IsIconic, KillTimer, LoadCursorW, LoadIconW, MSG, PostQuitMessage,
-    RegisterClassW, SW_SHOW, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOZORDER, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX,
-    WS_OVERLAPPED, WS_SYSMENU,
+    AdjustWindowRectEx, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    DispatchMessageW, GetMessageW, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IsIconic,
+    IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, MSG, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
+    SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
+    WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
 };
 use windows::core::{PCWSTR, w};
 
@@ -60,11 +62,6 @@ use super::extras;
 use super::instance::{CLASS, WM_SHOW_FIRST};
 use super::provider::Provider;
 use super::tray::{self, Tray, WM_TRAY};
-use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, HWND_NOTOPMOST, HWND_TOPMOST, IsWindowVisible, RegisterWindowMessageW, SW_HIDE,
-    SW_RESTORE, SWP_NOSIZE, SetForegroundWindow, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONUP,
-    WM_RBUTTONUP,
-};
 
 /// Sampling intervals (SPEC.md, Timing).
 const SAMPLE_MS: u32 = 2_000;
