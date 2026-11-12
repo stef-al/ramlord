@@ -675,6 +675,14 @@ impl Provider {
                     // opened. One that will not open is tried again at
                     // the next sample: it may only have been starting.
                     let opened = if e.session != 0 { open(e.pid) } else { None };
+                    // The process listed may have gone since, and its id
+                    // may already be another's: one that started at
+                    // another time is not the one listed.
+                    let opened = opened.filter(|o| {
+                        e.started_at_ms == 0
+                            || o.started_at_ms == 0
+                            || o.started_at_ms == e.started_at_ms
+                    });
                     let is_ours = own_sid.is_some()
                         && opened.as_ref().and_then(|o| o.owner.as_ref()) == own_sid.as_ref();
                     let path = opened.as_ref().and_then(|o| o.path.clone());
