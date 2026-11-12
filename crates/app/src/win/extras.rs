@@ -260,9 +260,19 @@ pub fn copy_image(hwnd: HWND, dib: &[u8]) -> Result<(), String> {
         }
         std::ptr::copy_nonoverlapping(dib.as_ptr(), at, dib.len());
         let _ = GlobalUnlock(memory);
-        if OpenClipboard(Some(hwnd)).is_err() {
+        // Another program may hold the clipboard for a moment (a clipboard
+        // history, a remote desktop client): try for a third of a second.
+        let mut opened = OpenClipboard(Some(hwnd)).is_ok();
+        for _ in 0..10 {
+            if opened {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            opened = OpenClipboard(Some(hwnd)).is_ok();
+        }
+        if !opened {
             let _ = GlobalFree(Some(memory));
-            return Err("OpenClipboard failed".into());
+            return Err("the clipboard is busy".into());
         }
         let _ = EmptyClipboard();
         let result = SetClipboardData(CF_DIB, Some(HANDLE(memory.0)));

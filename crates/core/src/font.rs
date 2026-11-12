@@ -385,13 +385,17 @@ const GLYPHS: [(char, Glyph); 61] = [
     ), // yen
 ];
 
-/// The glyph for `c`. Lower case is drawn as upper case; a typographic
-/// apostrophe as `'`, `·` as the middle dot and `↑` as the up arrow. Any
-/// other character without a glyph is drawn as `?`.
+/// The glyph for `c`. Lower case is drawn as upper case; typographic
+/// quotes as `'`, dashes as `-`, an ellipsis as `.`, the spaces Windows
+/// puts in names as a space, `·` as the middle dot and `↑` as the up
+/// arrow. Any other character without a glyph is drawn as `?`.
 pub fn glyph(c: char) -> &'static Glyph {
     let c = match c {
-        '\u{2019}' | '\u{2018}' => '\'',
-        '\u{b7}' => MIDDLE_DOT,
+        '\u{2018}' | '\u{2019}' | '\u{201c}' | '\u{201d}' | '"' | '`' => '\'',
+        '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+        '\u{2026}' => '.',
+        '\u{a0}' | '\u{2002}'..='\u{200a}' | '\u{202f}' | '\t' => ' ',
+        '\u{b7}' | '\u{2022}' => MIDDLE_DOT,
         '\u{2191}' => UP_ARROW,
         other => fold(other).to_ascii_uppercase(),
     };
@@ -492,6 +496,18 @@ mod tests {
         for c in ['€', '£', '¥'] {
             assert_ne!(glyph(c), glyph('?'), "{c}");
         }
+    }
+
+    #[test]
+    fn typographic_punctuation_draws_as_its_plain_form() {
+        // As in "Microsoft Edge – Work" or a name with a no-break space.
+        assert_eq!(glyph('\u{2013}'), glyph('-'));
+        assert_eq!(glyph('\u{2014}'), glyph('-'));
+        assert_eq!(glyph('\u{201c}'), glyph('\''));
+        assert_eq!(glyph('"'), glyph('\''));
+        assert_eq!(glyph('\u{2026}'), glyph('.'));
+        assert_eq!(glyph('\u{a0}'), glyph(' '));
+        assert!(has_glyph('\u{2013}') && has_glyph('\u{a0}'));
     }
 
     #[test]

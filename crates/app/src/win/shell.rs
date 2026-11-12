@@ -570,13 +570,16 @@ fn save_card(hwnd: HWND) {
     });
     let Some(card) = card else { return };
     let message = match write_card(hwnd, &card) {
-        Ok(()) => "Rent roll saved to Pictures and copied.".to_string(),
+        Ok(true) => "Rent roll saved to Pictures and copied.".to_string(),
+        // The file is there all the same; say so.
+        Ok(false) => "Rent roll saved to Pictures. The clipboard was busy.".to_string(),
         Err(e) => format!("No rent roll: {e}").chars().take(60).collect(),
     };
     let _ = with_live(|live, _, _, _, _| live.notice(message));
 }
 
-fn write_card(hwnd: HWND, card: &ramlord_core::Frame) -> Result<(), String> {
+/// Saves the card and copies it. Ok(false): saved, but not copied.
+fn write_card(hwnd: HWND, card: &ramlord_core::Frame) -> Result<bool, String> {
     let pictures = extras::pictures()
         .or_else(|| std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("Pictures")))
         .ok_or("no Pictures folder")?;
@@ -588,7 +591,7 @@ fn write_card(hwnd: HWND, card: &ramlord_core::Frame) -> Result<(), String> {
     ));
     crate::output::write_png(&path, card, CARD_PNG_SCALE)?;
     let dib = crate::output::clipboard_dib(&card.scaled(CARD_PNG_SCALE));
-    extras::copy_image(hwnd, &dib)
+    Ok(extras::copy_image(hwnd, &dib).is_ok())
 }
 
 /// Whether the close button hides the window to the tray: a live window
