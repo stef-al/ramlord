@@ -5,10 +5,10 @@
 //! process with its private working set, working set, commit, session,
 //! start time, parent and name, without opening any of them: this is how
 //! Task Manager measures processes it cannot open, such as services. Only
-//! processes outside session 0 are opened, for their image path, owner
-//! and FileDescription.
+//! processes outside session 0 are opened, and each only once in its
+//! life, for its image path, owner and FileDescription.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::c_void;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -573,10 +573,21 @@ pub fn foreground_pid() -> Option<u32> {
 /// graphics memory, which takes longer to read, as often.
 const WINDOWS_EVERY_MS: u64 = 5_000;
 
-/// Builds snapshots. Keeps FileDescriptions by image path, so each image's
-/// version resource is read once, and the visible windows and graphics
-/// memory for 5 seconds.
+/// What stays true of a process for as long as it lives, learned by
+/// opening it once.
+struct Known {
+    /// Tells the process from a later one with its id.
+    started_at_ms: u64,
+    path: String,
+    /// Runs as the user RAMlord runs as.
+    ours: bool,
+}
+
+/// Builds snapshots. Each process is opened once in its life (`known`)
+/// and each image's version resource is read once (`descriptions`); the
+/// visible windows and graphics memory are kept for 5 seconds.
 pub struct Provider {
+    known: HashMap<u32, Known>,
     descriptions: HashMap<String, Option<String>>,
     visible: BTreeSet<u32>,
     windows_at_ms: Option<u64>,
@@ -587,6 +598,7 @@ pub struct Provider {
 impl Provider {
     pub fn new() -> Provider {
         Provider {
+            known: HashMap::new(),
             descriptions: HashMap::new(),
             visible: BTreeSet::new(),
             windows_at_ms: None,
@@ -645,14 +657,44 @@ impl Provider {
         let mut processes = Vec::with_capacity(listed.len());
         let mut ours: Vec<bool> = Vec::with_capacity(listed.len());
         for e in listed {
-            // Session 0 processes are always Staff, and services mostly
-            // refuse to open anyway: only the rest are opened.
-            let opened = if e.session != 0 { open(e.pid) } else { None };
-            ours.push(
-                own_sid.is_some()
-                    && opened.as_ref().and_then(|o| o.owner.as_ref()) == own_sid.as_ref(),
-            );
-            let path = opened.as_ref().and_then(|o| o.path.clone());
+            // A process's image and owner never change, so it is opened
+            // once: the process list gives its start time, which tells it
+            // from a later process with its id. Opening every process at
+            // every sample would cost hundreds of calls each 2 seconds,
+            // and looks like prying to security software.
+            let known = self
+                .known
+                .get(&e.pid)
+                .filter(|k| e.started_at_ms != 0 && k.started_at_ms == e.started_at_ms)
+                .map(|k| (k.path.clone(), k.ours));
+            let (path, is_ours, opened_at_ms) = match known {
+                Some((path, ours)) => (Some(path), ours, 0),
+                None => {
+                    // Session 0 processes are always Staff, and services
+                    // mostly refuse to open anyway: only the rest are
+                    // opened. One that will not open is tried again at
+                    // the next sample: it may only have been starting.
+                    let opened = if e.session != 0 { open(e.pid) } else { None };
+                    let is_ours = own_sid.is_some()
+                        && opened.as_ref().and_then(|o| o.owner.as_ref()) == own_sid.as_ref();
+                    let path = opened.as_ref().and_then(|o| o.path.clone());
+                    if let Some(path) = &path
+                        && e.started_at_ms != 0
+                    {
+                        self.known.insert(
+                            e.pid,
+                            Known {
+                                started_at_ms: e.started_at_ms,
+                                path: path.clone(),
+                                ours: is_ours,
+                            },
+                        );
+                    }
+                    let opened_at_ms = opened.as_ref().map_or(0, |o| o.started_at_ms);
+                    (path, is_ours, opened_at_ms)
+                }
+            };
+            ours.push(is_ours);
             let description = match &path {
                 Some(path) => self
                     .descriptions
@@ -664,7 +706,7 @@ impl Provider {
             let started_at_ms = if e.started_at_ms > 0 {
                 e.started_at_ms
             } else {
-                opened.as_ref().map_or(0, |o| o.started_at_ms)
+                opened_at_ms
             };
             processes.push(Process {
                 pid: e.pid,
@@ -683,6 +725,15 @@ impl Provider {
                 is_self: e.pid == self_pid,
                 ..Process::default()
             });
+        }
+
+        // Forget processes that have gone, and descriptions nobody uses.
+        let alive: HashSet<u32> = processes.iter().map(|p| p.pid).collect();
+        self.known.retain(|pid, _| alive.contains(pid));
+        if self.descriptions.len() > 2 * self.known.len() + 64 {
+            let used: HashSet<&str> = self.known.values().map(|k| k.path.as_str()).collect();
+            self.descriptions
+                .retain(|path, _| used.contains(path.as_str()));
         }
 
         // Rent is the private working set. When every process reports 0

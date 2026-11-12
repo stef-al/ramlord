@@ -47,6 +47,10 @@ check "the card is 960 by 1200" '[ "$(identify -format %wx%h "$OUT/card.png" 2>/
 targets=$(timeout 5 xclip -selection clipboard -t TARGETS -o 2>/dev/null | tr '\n' ' ')
 echo "clipboard offers: $targets"
 check "the card is on the clipboard as an image" 'echo "$targets" | grep -qi "image/"'
+# What pastes is the card that was saved, pixel for pixel.
+timeout 5 xclip -selection clipboard -t image/bmp -o >"$OUT/clipboard.bmp" 2>/dev/null
+check "the pasted image is the saved card" \
+  '[ "$(compare -metric AE "$OUT/clipboard.bmp" "$OUT/card.png" null: 2>&1)" = 0 ]'
 
 # A second start exits at once and brings nothing new.
 start=$(date +%s)

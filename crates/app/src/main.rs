@@ -137,6 +137,7 @@ fn run(minimized: bool) -> ExitCode {
         .as_deref()
         .map(store::load_settings)
         .unwrap_or_default();
+    win::extras::refresh_autostart();
     settings.start_with_windows = win::extras::autostart();
     // The embedded prices, or the last fetched file if it is newer.
     let cache_path = store::prices_path();

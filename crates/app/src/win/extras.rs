@@ -5,15 +5,14 @@
 
 use std::path::PathBuf;
 
-use ramlord_core::Frame;
 use ramlord_core::smbios::{self, MemoryType};
 use windows::Win32::Foundation::GlobalFree;
 use windows::Win32::Foundation::{ERROR_SUCCESS, HANDLE, HGLOBAL, HWND};
-use windows::Win32::Graphics::Gdi::{BI_RGB, BITMAPINFOHEADER};
 use windows::Win32::Networking::WinHttp::{
-    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER,
-    WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
-    WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
+    WinHttpSendRequest, WinHttpSetTimeouts,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::DataExchange::{
@@ -65,21 +64,34 @@ fn wide(text: &str) -> Vec<u16> {
 /// run it on a thread of its own.
 pub fn fetch(host: &str, path: &str) -> Result<String, String> {
     const MAX: usize = 64 * 1024;
+    const TIMEOUT_MS: i32 = 10_000;
     let (host, path) = (wide(host), wide(path));
     // SAFETY: plain WinHTTP calls; every handle is closed by `Internet`,
     // and every buffer outlives the call that fills it.
     unsafe {
-        // A generic agent name: nothing about the user or the PC.
-        let session = Internet(WinHttpOpen(
-            w!("RAMlord"),
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            PCWSTR::null(),
-            PCWSTR::null(),
-            0,
-        ));
+        // A generic agent name: nothing about the user or the PC. The
+        // proxy is found the way the system's own settings say (a company
+        // PC often has no direct way out); where that is not offered, the
+        // WinHTTP default.
+        let open = |access| {
+            Internet(WinHttpOpen(
+                w!("RAMlord"),
+                access,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                0,
+            ))
+        };
+        let mut session = open(WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY);
+        if session.0.is_null() {
+            session = open(WINHTTP_ACCESS_TYPE_DEFAULT_PROXY);
+        }
         if session.0.is_null() {
             return Err("WinHttpOpen failed".into());
         }
+        // Without limits a name that never resolves would hold this thread
+        // for good: ten seconds for each step.
+        let _ = WinHttpSetTimeouts(session.0, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS);
         let connection = Internet(WinHttpConnect(session.0, PCWSTR(host.as_ptr()), 443, 0));
         if connection.0.is_null() {
             return Err("WinHttpConnect failed".into());
@@ -140,9 +152,15 @@ pub fn fetch(host: &str, path: &str) -> Result<String, String> {
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_VALUE: PCWSTR = w!("RAMlord");
 
-/// Whether RAMlord starts with Windows: its value in the per-user Run key.
-pub fn autostart() -> bool {
-    let mut size = 0u32;
+/// What the Run value says for this exe: `"<this exe>" --minimized`.
+fn run_command() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    Ok(format!("\"{}\" --minimized", exe.display()))
+}
+
+/// RAMlord's value in the per-user Run key, if it has one.
+fn run_value() -> Option<String> {
+    let mut bytes = 0u32;
     // SAFETY: a size query of one string value.
     let status = unsafe {
         RegGetValueW(
@@ -152,10 +170,47 @@ pub fn autostart() -> bool {
             RRF_RT_REG_SZ,
             None,
             None,
-            Some(&mut size),
+            Some(&mut bytes),
         )
     };
-    status == ERROR_SUCCESS
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let mut text = vec![0u16; (bytes as usize).div_ceil(2) + 1];
+    let mut bytes = (text.len() * 2) as u32;
+    // SAFETY: `text` holds `bytes` bytes, as the call is told.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            RUN_VALUE,
+            RRF_RT_REG_SZ,
+            None,
+            Some(text.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let end = text.iter().position(|&u| u == 0).unwrap_or(text.len());
+    Some(String::from_utf16_lossy(&text[..end]))
+}
+
+/// Whether RAMlord starts with Windows: its value in the per-user Run key.
+pub fn autostart() -> bool {
+    run_value().is_some()
+}
+
+/// Keeps the Run value pointing at this exe. RAMlord is one file a person
+/// may move; the value would then start nothing while the setting still
+/// read ON. Does nothing when start with Windows is off.
+pub fn refresh_autostart() {
+    if let (Some(value), Ok(command)) = (run_value(), run_command())
+        && !value.eq_ignore_ascii_case(&command)
+    {
+        let _ = set_autostart(true);
+    }
 }
 
 /// Adds `"<this exe>" --minimized` to the per-user Run key, or removes it.
@@ -169,8 +224,7 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
             s => Err(format!("RegDeleteKeyValueW: {}", s.0)),
         };
     }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let command = wide(&format!("\"{}\" --minimized", exe.display()));
+    let command = wide(&run_command()?);
     // SAFETY: writes one string value under the user's own key; `command`
     // is NUL-terminated and outlives the call.
     let status = unsafe {
@@ -190,43 +244,21 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
     }
 }
 
-/// Puts `frame` on the clipboard as a device-independent bitmap (CF_DIB),
-/// which chat apps and editors paste.
-pub fn copy_image(hwnd: HWND, frame: &Frame) -> Result<(), String> {
+/// Puts a device-independent bitmap (`output::clipboard_dib`) on the
+/// clipboard as CF_DIB, which chat apps and editors paste.
+pub fn copy_image(hwnd: HWND, dib: &[u8]) -> Result<(), String> {
     const CF_DIB: u32 = 8;
-    let header = BITMAPINFOHEADER {
-        biSize: size_of::<BITMAPINFOHEADER>() as u32,
-        biWidth: frame.width as i32,
-        // Positive: rows run bottom-up, as a DIB on the clipboard expects.
-        biHeight: frame.height as i32,
-        biPlanes: 1,
-        biBitCount: 32,
-        biCompression: BI_RGB.0,
-        ..Default::default()
-    };
-    let row = frame.width as usize * 4;
-    let size = size_of::<BITMAPINFOHEADER>() + row * frame.height as usize;
     // SAFETY: the memory is allocated, filled within its size and handed to
     // the clipboard, which then owns it; on any failure it is freed here.
     unsafe {
         let memory: HGLOBAL =
-            GlobalAlloc(GMEM_MOVEABLE, size).map_err(|e| format!("GlobalAlloc: {e}"))?;
+            GlobalAlloc(GMEM_MOVEABLE, dib.len()).map_err(|e| format!("GlobalAlloc: {e}"))?;
         let at = GlobalLock(memory).cast::<u8>();
         if at.is_null() {
             let _ = GlobalFree(Some(memory));
             return Err("GlobalLock failed".into());
         }
-        std::ptr::copy_nonoverlapping(
-            (&raw const header).cast::<u8>(),
-            at,
-            size_of::<BITMAPINFOHEADER>(),
-        );
-        let pixels = at.add(size_of::<BITMAPINFOHEADER>());
-        for y in 0..frame.height as usize {
-            let source = &frame.pixels[y * frame.width as usize..(y + 1) * frame.width as usize];
-            let target = pixels.add((frame.height as usize - 1 - y) * row);
-            std::ptr::copy_nonoverlapping(source.as_ptr().cast::<u8>(), target, row);
-        }
+        std::ptr::copy_nonoverlapping(dib.as_ptr(), at, dib.len());
         let _ = GlobalUnlock(memory);
         if OpenClipboard(Some(hwnd)).is_err() {
             let _ = GlobalFree(Some(memory));

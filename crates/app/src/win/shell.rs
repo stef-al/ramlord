@@ -4,10 +4,12 @@
 //! the window moves to another monitor or the display changes. Per-monitor
 //! DPI awareness v2 keeps the pixels square at any display scaling.
 //!
-//! Live, it samples every 2 seconds (5 while minimized), credits focus
-//! every second, and redraws only when the frame changes. It saves
-//! `state.json` every minute and when the window closes. Closing the
-//! window ends the program; the tray comes with M5.
+//! Live, it samples every 2 seconds (5 while hidden or minimized),
+//! credits focus every second, and redraws only when the frame changes.
+//! It saves `state.json` every minute, when the app quits and when
+//! Windows shuts down or the user signs out. The close button hides the
+//! window to the tray (`tray`) unless the settings say it quits; one copy
+//! runs (`instance`).
 //!
 //! Clicks and keys go to the core, which answers with commands: close or
 //! terminate a tenant's processes, open Startup settings, save the Family
@@ -47,9 +49,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, IDC_ARROW, IsIconic, KillTimer, LoadCursorW, LoadIconW, MSG, PostQuitMessage,
     RegisterClassW, SW_SHOW, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOZORDER, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED,
-    WS_SYSMENU,
+    WINDOW_STYLE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX,
+    WS_OVERLAPPED, WS_SYSMENU,
 };
 use windows::core::{PCWSTR, w};
 
@@ -255,7 +257,9 @@ pub fn show(content: Content, minimized: bool) -> Result<(), String> {
     let (cw, ch) = rescale(primary);
     let (w, h) = window_size(None, cw, ch);
 
-    let class = CLASS;
+    // The demo's window has a class of its own: a second start of the app
+    // looks for the live window by class and must not find the demo.
+    let class = if live { CLASS } else { w!("RAMlordDemo") };
     // SAFETY: standard Win32 window creation and message loop on this
     // thread. Every pointer passed points to a live local for the call.
     unsafe {
@@ -586,7 +590,8 @@ fn write_card(hwnd: HWND, card: &ramlord_core::Frame) -> Result<(), String> {
         year, month, day, hour, minute, second,
     ));
     crate::output::write_png(&path, card, CARD_PNG_SCALE)?;
-    extras::copy_image(hwnd, &card.scaled(CARD_PNG_SCALE))
+    let dib = crate::output::clipboard_dib(&card.scaled(CARD_PNG_SCALE));
+    extras::copy_image(hwnd, &dib)
 }
 
 /// Whether the close button hides the window to the tray: a live window
@@ -890,6 +895,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_DISPLAYCHANGE => {
             fit(hwnd);
+            LRESULT(0)
+        }
+        // Signing out or shutting down: Windows ends the process without
+        // WM_DESTROY, and that is how a tray app usually ends. Save now.
+        WM_ENDSESSION => {
+            if wparam.0 != 0 {
+                save();
+            }
             LRESULT(0)
         }
         // The frame covers the whole client area; skipping the erase
